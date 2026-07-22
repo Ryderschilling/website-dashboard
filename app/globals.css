@@ -58,13 +58,25 @@ thead th .arrow{opacity:.6;font-size:9px;margin-left:3px}
 tbody tr{border-bottom:1px solid var(--border);transition:background .12s;cursor:pointer}
 tbody tr:last-child{border-bottom:none}
 tbody tr:hover{background:var(--panel2)}
-tbody td{padding:13px 14px;vertical-align:middle}
+tbody td{padding:17px 14px;vertical-align:middle}
 .cell-client{font-weight:600}
 .cell-sub{color:var(--muted);font-size:12.5px;margin-top:1px}
 .num{font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
 .link-cell{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:bottom}
 .badge{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:12px;font-weight:600;white-space:nowrap}
 .dot{width:6px;height:6px;border-radius:50%}
+
+/* inline phase dropdown */
+.work-trigger{display:inline-flex;align-items:center;gap:4px;padding:3px 5px;border-radius:20px;transition:.12s}
+.work-trigger:hover{background:var(--panel2)}
+.work-caret{color:var(--faint);font-size:9px;line-height:1;transition:.12s}
+.work-trigger:hover .work-caret{color:var(--muted)}
+.work-menu{position:fixed;background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:6px;min-width:176px;box-shadow:0 14px 34px rgba(0,0,0,.55);z-index:60}
+.work-opt{display:flex;align-items:center;gap:9px;width:100%;text-align:left;padding:7px 10px;border-radius:7px;font-size:13px;font-weight:600;color:var(--muted);white-space:nowrap;transition:.1s}
+.work-opt:hover{background:var(--panel);color:var(--text)}
+.work-opt.active{color:var(--text)}
+.work-swatch{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.work-check{margin-left:auto;color:var(--muted);font-size:12px}
 .row-actions{opacity:0;transition:.12s;text-align:right;white-space:nowrap}
 tbody tr:hover .row-actions{opacity:1}
 .icon-btn{padding:5px;border-radius:6px;color:var(--muted)}

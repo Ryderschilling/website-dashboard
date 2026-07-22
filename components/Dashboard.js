@@ -1,10 +1,10 @@
 "use client";
 import { useState, useEffect, useMemo, useRef } from "react";
 
-const WORK_STATUSES = ["Lead", "In Progress", "In Review", "Launched", "On Hold", "Complete"];
+const WORK_STATUSES = ["Lead", "In Progress", "In Review", "Launched", "Payment Pending", "On Hold", "Complete"];
 const WORK_COLORS = {
   Lead: "#8b909b", "In Progress": "#58a6ff", "In Review": "#bc8cff",
-  Launched: "#3fb950", "On Hold": "#d29922", Complete: "#3fb950",
+  Launched: "#3fb950", "Payment Pending": "#f0883e", "On Hold": "#d29922", Complete: "#3fb950",
 };
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
@@ -126,6 +126,27 @@ export default function Dashboard() {
     } catch (e) { showToast("⚠ Delete failed"); }
   }
 
+  // ---- inline quick phase change ----
+  async function quickWork(p, newWork) {
+    if (!newWork || newWork === p.work) return;
+    const prev = projects;
+    setProjects((list) => list.map((x) => (x.id === p.id ? { ...x, work: newWork } : x)));
+    try {
+      const res = await fetch(`/api/projects/${p.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...p, work: newWork }),
+      });
+      if (!res.ok) throw new Error("save failed");
+      const d = await res.json();
+      setProjects((list) => list.map((x) => (x.id === d.project.id ? d.project : x)));
+      showToast("Phase updated");
+    } catch (e) {
+      setProjects(prev);
+      showToast("⚠ Could not update phase");
+    }
+  }
+
   // ---- import / export ----
   function backup() {
     downloadBlob(new Blob([JSON.stringify(projects, null, 2)], { type: "application/json" }), "builtbyRyder-clients-backup.json");
@@ -224,7 +245,7 @@ export default function Dashboard() {
             projects={projects} filtered={filtered} q={q} setQ={setQ}
             fWork={fWork} setFWork={setFWork} fPay={fPay} setFPay={setFPay}
             sort={sort} toggleSort={toggleSort} onRow={openModal} onAdd={() => openModal(null)}
-            onImport={triggerImport}
+            onImport={triggerImport} onQuickWork={quickWork}
           />
         ) : (
           <AnalyticsView projects={projects} />
@@ -250,7 +271,7 @@ export default function Dashboard() {
 }
 
 // ---------- Projects table ----------
-function ProjectsView({ projects, filtered, q, setQ, fWork, setFWork, fPay, setFPay, sort, toggleSort, onRow, onAdd, onImport }) {
+function ProjectsView({ projects, filtered, q, setQ, fWork, setFWork, fPay, setFPay, sort, toggleSort, onRow, onAdd, onImport, onQuickWork }) {
   const th = (key, label, opts = {}) => (
     <th
       className={(opts.sortable === false ? "" : "sortable ") + (opts.hideSm ? "hide-sm" : "")}
@@ -305,13 +326,13 @@ function ProjectsView({ projects, filtered, q, setQ, fWork, setFWork, fPay, setF
                 {th("out", "Outstanding", { align: "right", hideSm: true })}
                 {th("pay", "Payment", { sortable: false })}
                 {th("work", "Work")}
-                {th("due", "Due", { hideSm: true })}
+                {th("due", "Finished", { hideSm: true })}
                 {th("refby", "Referred by", { sortable: false, hideSm: true })}
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((p) => <Row key={p.id} p={p} onRow={onRow} />)}
+              {filtered.map((p) => <Row key={p.id} p={p} onRow={onRow} onQuickWork={onQuickWork} />)}
             </tbody>
           </table>
         </div>
@@ -328,16 +349,11 @@ function Badge({ text, color }) {
   );
 }
 
-function Row({ p, onRow }) {
+function Row({ p, onRow, onQuickWork }) {
   const ps = payStatus(p);
   const o = outstanding(p);
-  const dd = parseDate(p.due);
-  let dueColor;
-  if (!dd) dueColor = "var(--faint)";
-  else if (p.work !== "Launched" && p.work !== "Complete") {
-    const dl = daysBetween(dd, today());
-    if (dl < 0) dueColor = "var(--red)"; else if (dl <= 7) dueColor = "var(--amber)";
-  }
+  // "Finished" is a completion date, not a deadline — keep it neutral.
+  const dueColor = parseDate(p.due) ? undefined : "var(--faint)";
   return (
     <tr onClick={() => onRow(p)}>
       <td>
@@ -355,13 +371,77 @@ function Row({ p, onRow }) {
       <td className="num hide-sm">{num(p.paid) > 0 ? money(p.paid) : "—"}</td>
       <td className="num hide-sm" style={{ color: o > 0 ? "var(--amber)" : "var(--faint)" }}>{o > 0 ? money(o) : "—"}</td>
       <td><Badge text={ps} color={payColor(ps)} /></td>
-      <td><Badge text={p.work} color={WORK_COLORS[p.work] || "#8b909b"} /></td>
+      <WorkCell p={p} onQuickWork={onQuickWork} />
       <td className="num hide-sm" style={{ color: dueColor }}>{fmtDate(p.due)}</td>
       <td className="hide-sm" style={{ color: p.refby ? undefined : "var(--faint)" }}>{p.refby || "—"}</td>
       <td className="row-actions">
         <button className="icon-btn" title="Edit" onClick={(e) => { e.stopPropagation(); onRow(p); }}>&#9998;</button>
       </td>
     </tr>
+  );
+}
+
+// ---------- Inline phase (work status) dropdown ----------
+function WorkCell({ p, onQuickWork }) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState({ left: 0, top: 0 });
+  const btnRef = useRef(null);
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(e) {
+      if (btnRef.current && btnRef.current.contains(e.target)) return;
+      if (menuRef.current && menuRef.current.contains(e.target)) return;
+      setOpen(false);
+    }
+    function onMove() { setOpen(false); } // close on scroll/resize so fixed coords never go stale
+    document.addEventListener("click", onDoc);
+    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onMove);
+    return () => {
+      document.removeEventListener("click", onDoc);
+      window.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("resize", onMove);
+    };
+  }, [open]);
+
+  function toggle(e) {
+    e.stopPropagation();
+    if (open) { setOpen(false); return; }
+    const r = btnRef.current.getBoundingClientRect();
+    const menuH = WORK_STATUSES.length * 33 + 12;
+    const roomBelow = window.innerHeight - r.bottom;
+    const openUp = roomBelow < menuH + 12 && r.top > roomBelow;
+    setPos({ left: r.left, top: openUp ? Math.max(8, r.top - menuH - 6) : r.bottom + 6 });
+    setOpen(true);
+  }
+
+  function pick(e, s) {
+    e.stopPropagation();
+    setOpen(false);
+    onQuickWork(p, s);
+  }
+
+  const color = WORK_COLORS[p.work] || "#8b909b";
+  return (
+    <td onClick={(e) => e.stopPropagation()}>
+      <button ref={btnRef} type="button" className="work-trigger" onClick={toggle} title="Change phase">
+        <Badge text={p.work} color={color} />
+        <span className="work-caret">▾</span>
+      </button>
+      {open && (
+        <div ref={menuRef} className="work-menu" style={{ left: pos.left, top: pos.top }}>
+          {WORK_STATUSES.map((s) => (
+            <button key={s} type="button" className={"work-opt" + (s === p.work ? " active" : "")} onClick={(e) => pick(e, s)}>
+              <span className="work-swatch" style={{ background: WORK_COLORS[s] || "#8b909b" }} />
+              {s}
+              {s === p.work && <span className="work-check">✓</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </td>
   );
 }
 
@@ -409,7 +489,7 @@ function EditModal({ form, setField, isEdit, onClose, onSave, onDelete, delConfi
               <label htmlFor="refpaid" style={{ color: "var(--text)" }}>Referral paid out</label>
             </div>
             {inp("start", "Start date", { type: "date" })}
-            {inp("due", "Due date", { type: "date" })}
+            {inp("due", "Finished date", { type: "date" })}
             {inp("launch", "Launch date", { type: "date" })}
             {inp("notes", "Notes", { full: true, textarea: true, ph: "Anything worth remembering…" })}
           </div>

@@ -39,7 +39,7 @@ header.top{position:sticky;top:0;z-index:20;background:rgba(10,11,14,.85);backdr
 .menu-list button{display:block;width:100%;text-align:left;padding:8px 10px;border-radius:7px;font-size:13px;color:var(--text)}
 .menu-list button:hover{background:var(--panel)}
 
-main{padding:24px 0 80px}
+main{padding:40px 0 100px}
 .view{display:block}
 
 .filters{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;align-items:center}

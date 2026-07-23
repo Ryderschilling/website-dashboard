@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useMemo, useRef } from "react";
 
-const WORK_STATUSES = ["Lead", "In Progress", "In Review", "Launched", "Payment Pending", "On Hold", "Complete"];
+const WORK_STATUSES = ["Lead", "Payment Pending", "In Progress", "In Review", "Launched", "On Hold", "Complete"];
 const WORK_COLORS = {
   Lead: "#8b909b", "In Progress": "#58a6ff", "In Review": "#bc8cff",
   Launched: "#3fb950", "Payment Pending": "#f0883e", "On Hold": "#d29922", Complete: "#3fb950",

@@ -1,4 +1,4 @@
--- builtbyRyder Client Dashboard schema
+-- Ryder Schilling Client Dashboard schema
 -- Run this once against your Neon database (Neon dashboard -> SQL Editor -> paste -> Run).
 
 create table if not exists projects (

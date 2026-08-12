@@ -1,7 +1,7 @@
 import "./globals.css";
 
 export const metadata = {
-  title: "builtbyRyder — Client Dashboard",
+  title: "Ryder Schilling — Client Dashboard",
   description: "Client, project, payment and referral tracker",
 };
 

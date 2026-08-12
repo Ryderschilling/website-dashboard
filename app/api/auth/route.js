@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { expectedToken, COOKIE_NAME } from "@/lib/token";
+import { expectedToken, hashPassword, COOKIE_NAME } from "@/lib/token";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,11 +17,7 @@ export async function POST(req) {
   } catch (e) {}
   const pw = (body.password || "").toString();
 
-  const data = new TextEncoder().encode(pw + "builtbyryder_dashboard_v1");
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  const submitted = Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  const submitted = await hashPassword(pw);
 
   if (submitted !== token) {
     return NextResponse.json({ error: "Wrong password" }, { status: 401 });

@@ -47,7 +47,8 @@ main{padding:40px 0 100px}
 .search input{width:100%;padding:10px 12px 10px 36px;background:var(--panel);border:1px solid var(--border);border-radius:9px;color:var(--text)}
 .search svg{position:absolute;left:11px;top:50%;transform:translateY(-50%);opacity:.5}
 .filters select{padding:10px 12px;background:var(--panel);border:1px solid var(--border);border-radius:9px;color:var(--text)}
-.count-note{color:var(--muted);font-size:13px;margin-left:auto}
+.count-note{color:var(--muted);font-size:13px;margin-left:auto;display:flex;align-items:center;gap:10px}
+.count-note .mrr-total{color:var(--green);font-weight:600;font-variant-numeric:tabular-nums;padding-left:10px;border-left:1px solid var(--border)}
 
 .table-wrap{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
 table{width:100%;border-collapse:collapse}

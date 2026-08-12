@@ -33,7 +33,7 @@ export default function Login() {
     <div className="login-wrap">
       <form className="login-card" onSubmit={submit}>
         <div className="logo">R</div>
-        <h2>builtbyRyder</h2>
+        <h2>Ryder Schilling</h2>
         <p>Client dashboard — enter your password to continue.</p>
         <input
           type="password"

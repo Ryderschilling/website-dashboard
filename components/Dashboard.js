@@ -53,7 +53,7 @@ export default function Dashboard() {
   const [q, setQ] = useState("");
   const [fWork, setFWork] = useState("");
   const [fPay, setFPay] = useState("");
-  const [sort, setSort] = useState({ key: "due", dir: 1 });
+  const [sort, setSort] = useState({ key: "mrr", dir: -1 });
   const [editing, setEditing] = useState(null); // null=closed, {}=new, {..}=edit
   const [form, setForm] = useState(BLANK);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -149,7 +149,7 @@ export default function Dashboard() {
 
   // ---- import / export ----
   function backup() {
-    downloadBlob(new Blob([JSON.stringify(projects, null, 2)], { type: "application/json" }), "builtbyRyder-clients-backup.json");
+    downloadBlob(new Blob([JSON.stringify(projects, null, 2)], { type: "application/json" }), "ryder-schilling-clients-backup.json");
     showToast("Backup downloaded");
   }
   function exportCsv() {
@@ -157,7 +157,7 @@ export default function Dashboard() {
     const cell = (v) => { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
     const rows = [cols.join(",")];
     projects.forEach((p) => rows.push([p.client,p.project,p.live,p.staging,p.niche,p.work,p.deal,p.paid,outstanding(p),payStatus(p),p.mrr,p.refby,p.refpct,Math.round(refOwed(p)),p.refpaid?"yes":"no",p.start,p.due,p.launch,p.notes].map(cell).join(",")));
-    downloadBlob(new Blob([rows.join("\n")], { type: "text/csv" }), "builtbyRyder-clients.csv");
+    downloadBlob(new Blob([rows.join("\n")], { type: "text/csv" }), "ryder-schilling-clients.csv");
     showToast("CSV exported");
   }
   function triggerImport() { fileRef.current && fileRef.current.click(); }
@@ -197,6 +197,7 @@ export default function Dashboard() {
         case "deal": av = num(a.deal); bv = num(b.deal); break;
         case "paid": av = num(a.paid); bv = num(b.paid); break;
         case "out": av = outstanding(a); bv = outstanding(b); break;
+        case "mrr": av = num(a.mrr); bv = num(b.mrr); break;
         case "work": av = WORK_STATUSES.indexOf(a.work); bv = WORK_STATUSES.indexOf(b.work); break;
         case "due": av = a.due || "9999"; bv = b.due || "9999"; break;
         default: av = a.client; bv = b.client;
@@ -219,7 +220,7 @@ export default function Dashboard() {
     <>
       <header className="top">
         <div className="wrap top-inner">
-          <div className="brand"><span className="logo">R</span> builtbyRyder <span className="dim">· Clients</span></div>
+          <div className="brand"><span className="logo">R</span> Ryder Schilling <span className="dim">· Clients</span></div>
           <nav className="tabs">
             <button className={"tab" + (tab === "projects" ? " active" : "")} onClick={() => setTab("projects")}>Projects</button>
             <button className={"tab" + (tab === "analytics" ? " active" : "")} onClick={() => setTab("analytics")}>Analytics</button>
@@ -272,6 +273,7 @@ export default function Dashboard() {
 
 // ---------- Projects table ----------
 function ProjectsView({ projects, filtered, q, setQ, fWork, setFWork, fPay, setFPay, sort, toggleSort, onRow, onAdd, onImport, onQuickWork }) {
+  const totalMrr = filtered.reduce((s, p) => s + num(p.mrr), 0);
   const th = (key, label, opts = {}) => (
     <th
       className={(opts.sortable === false ? "" : "sortable ") + (opts.hideSm ? "hide-sm" : "")}
@@ -300,6 +302,7 @@ function ProjectsView({ projects, filtered, q, setQ, fWork, setFWork, fPay, setF
         </select>
         <span className="count-note">
           {projects.length ? `${filtered.length} of ${projects.length} project${projects.length === 1 ? "" : "s"}` : ""}
+          {totalMrr > 0 ? <span className="mrr-total">{money(totalMrr)}/mo recurring</span> : null}
         </span>
       </div>
 
@@ -326,7 +329,7 @@ function ProjectsView({ projects, filtered, q, setQ, fWork, setFWork, fPay, setF
                 {th("out", "Outstanding", { align: "right", hideSm: true })}
                 {th("pay", "Payment", { sortable: false })}
                 {th("work", "Work")}
-                {th("due", "Finished", { hideSm: true })}
+                {th("mrr", "MRR", { align: "right" })}
                 {th("refby", "Referred by", { sortable: false, hideSm: true })}
                 <th></th>
               </tr>
@@ -352,8 +355,7 @@ function Badge({ text, color }) {
 function Row({ p, onRow, onQuickWork }) {
   const ps = payStatus(p);
   const o = outstanding(p);
-  // "Finished" is a completion date, not a deadline — keep it neutral.
-  const dueColor = parseDate(p.due) ? undefined : "var(--faint)";
+  const m = num(p.mrr);
   return (
     <tr onClick={() => onRow(p)}>
       <td>
@@ -372,7 +374,9 @@ function Row({ p, onRow, onQuickWork }) {
       <td className="num hide-sm" style={{ color: o > 0 ? "var(--amber)" : "var(--faint)" }}>{o > 0 ? money(o) : "—"}</td>
       <td><Badge text={ps} color={payColor(ps)} /></td>
       <WorkCell p={p} onQuickWork={onQuickWork} />
-      <td className="num hide-sm" style={{ color: dueColor }}>{fmtDate(p.due)}</td>
+      <td className="num" style={{ color: m > 0 ? "var(--green)" : "var(--faint)" }}>
+        {m > 0 ? money(m) + "/mo" : "—"}
+      </td>
       <td className="hide-sm" style={{ color: p.refby ? undefined : "var(--faint)" }}>{p.refby || "—"}</td>
       <td className="row-actions">
         <button className="icon-btn" title="Edit" onClick={(e) => { e.stopPropagation(); onRow(p); }}>&#9998;</button>

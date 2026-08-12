@@ -1,4 +1,4 @@
-# builtbyRyder — Client Dashboard
+# Ryder Schilling — Client Dashboard
 
 Next.js + Neon (Postgres) client / project / referral tracker. Deploys to Vercel.
 
@@ -17,7 +17,7 @@ Next.js + Neon (Postgres) client / project / referral tracker. Deploys to Vercel
 ## STEP 0 — SAVE YOUR CURRENT DATA FIRST (do this before anything else)
 
 Your existing clients live only in your old dashboard's browser storage.
-Open the old `builtbyRyder-Client-Dashboard.html`, click the `•••` menu → **Backup (JSON)**.
+Open the old `Ryder-Schilling-Client-Dashboard.html`, click the `•••` menu → **Backup (JSON)**.
 Keep that file. You'll import it in Step 3. Nothing can be lost once you have it.
 
 ---
@@ -25,7 +25,7 @@ Keep that file. You'll import it in Step 3. Nothing can be lost once you have it
 ## STEP 1 — Neon database
 
 1. Go to https://neon.com and sign up (free, no card).
-2. Create a project (any name, e.g. `builtbyryder`). Pick the region closest to you.
+2. Create a project (any name, e.g. `ryder-schilling`). Pick the region closest to you.
 3. On the project dashboard click **Connect**.
 4. Copy the **Pooled connection** string. It looks like:
    `postgresql://user:pass@ep-xxxx-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require`
@@ -64,10 +64,10 @@ now in Neon.
 ```bash
 git init
 git add .
-git commit -m "builtbyRyder client dashboard"
+git commit -m "Ryder Schilling client dashboard"
 git branch -M main
 # create an empty repo on github.com first (no README), then:
-git remote add origin https://github.com/YOUR_USERNAME/builtbyryder-dashboard.git
+git remote add origin https://github.com/YOUR_USERNAME/ryder-schilling-dashboard.git
 git push -u origin main
 ```
 

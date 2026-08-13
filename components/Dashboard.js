@@ -203,6 +203,7 @@ export default function Dashboard() {
       switch (sort.key) {
         case "client": av = a.client.toLowerCase(); bv = b.client.toLowerCase(); break;
         case "deal": av = num(a.deal); bv = num(b.deal); break;
+        case "paid": av = num(a.paid); bv = num(b.paid); break;
         case "out": av = outstanding(a); bv = outstanding(b); break;
         case "mrr": av = liveMrr(a); bv = liveMrr(b); break;
         case "work": av = WORK_STATUSES.indexOf(a.work); bv = WORK_STATUSES.indexOf(b.work); break;
@@ -330,8 +331,8 @@ function ProjectsView({ projects, filtered, q, setQ, fWork, setFWork, fPay, setF
             <thead>
               <tr>
                 {th("client", "Client / Project")}
-                {th("live", "Live URL", { sortable: false, hideSm: true })}
                 {th("deal", "Deal", { align: "right" })}
+                {th("paid", "Collected", { align: "right", hideSm: true })}
                 {th("out", "Outstanding", { align: "right", hideSm: true })}
                 {th("work", "Work")}
                 {th("mrr", "MRR", { align: "right" })}
@@ -363,17 +364,17 @@ function Row({ p, onRow, onQuickWork }) {
   return (
     <tr onClick={() => onRow(p)}>
       <td>
-        <div className="cell-client">{p.client || "(no name)"}</div>
+        <div className="cell-client">
+          {p.client || "(no name)"}
+          {p.live ? (
+            <a className="cell-live" href={p.live} target="_blank" rel="noopener noreferrer"
+               title={p.live.replace(/^https?:\/\//, "")} onClick={(e) => e.stopPropagation()}>↗</a>
+          ) : null}
+        </div>
         {(p.project || p.niche) && <div className="cell-sub">{[p.project, p.niche].filter(Boolean).join(" · ")}</div>}
       </td>
-      <td className="hide-sm">
-        {p.live ? (
-          <a className="link-cell" href={p.live} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
-            {p.live.replace(/^https?:\/\//, "")}
-          </a>
-        ) : <span style={{ color: "var(--faint)" }}>—</span>}
-      </td>
       <td className="num">{num(p.deal) > 0 ? money(p.deal) : "—"}</td>
+      <td className="num hide-sm" style={{ color: num(p.paid) > 0 ? "var(--green)" : "var(--faint)" }}>{num(p.paid) > 0 ? money(p.paid) : "—"}</td>
       <td className="num hide-sm" style={{ color: o > 0 ? "var(--amber)" : "var(--faint)" }}>{o > 0 ? money(o) : "—"}</td>
       <WorkCell p={p} onQuickWork={onQuickWork} />
       <td className="num" style={{ color: m > 0 ? "var(--green)" : "var(--faint)" }}>

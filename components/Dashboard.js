@@ -1,11 +1,14 @@
 "use client";
 import { useState, useEffect, useMemo, useRef } from "react";
 
-const WORK_STATUSES = ["Lead", "Payment Pending", "In Progress", "In Review", "Launched", "On Hold", "Complete"];
+const WORK_STATUSES = ["Lead", "In Progress", "In Review", "Complete"];
 const WORK_COLORS = {
-  Lead: "#8b909b", "In Progress": "#58a6ff", "In Review": "#bc8cff",
-  Launched: "#3fb950", "Payment Pending": "#f0883e", "On Hold": "#d29922", Complete: "#3fb950",
+  Lead: "#8b909b", "In Progress": "#58a6ff", "In Review": "#bc8cff", Complete: "#3fb950",
 };
+// legacy phases from the old 7-status list, folded into the 4 that remain
+const LEGACY_WORK = { "Payment Pending": "In Progress", "On Hold": "In Progress", Launched: "Complete" };
+const normWork = (w) => (WORK_STATUSES.includes(w) ? w : LEGACY_WORK[w] || "Lead");
+const normProject = (p) => ({ ...p, work: normWork(p.work) });
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
 // ---- helpers ----
@@ -13,6 +16,9 @@ const num = (v) => { const n = parseFloat(v); return isFinite(n) && n > 0 ? n : 
 const money = (n) => "$" + Math.round(n).toLocaleString("en-US");
 const outstanding = (p) => Math.max(0, num(p.deal) - num(p.paid));
 const refOwed = (p) => (p.refpaid ? 0 : (num(p.paid) * num(p.refpct)) / 100);
+const isDone = (p) => normWork(p.work) === "Complete";
+// MRR only counts once the job is Complete and the retainer is actually billing
+const liveMrr = (p) => (isDone(p) ? num(p.mrr) : 0);
 function payStatus(p) {
   const d = num(p.deal), pd = num(p.paid);
   if (d <= 0) return "No deal set"; // no deal amount => completion is undefined
@@ -78,7 +84,7 @@ export default function Dashboard() {
       const res = await fetch("/api/projects");
       if (res.status === 401) { window.location.href = "/login"; return; }
       const d = await res.json();
-      setProjects(d.projects || []);
+      setProjects((d.projects || []).map(normProject));
     } catch (e) { showToast("⚠ Could not reach the database"); }
     setLoading(false);
   }
@@ -104,10 +110,11 @@ export default function Dashboard() {
       });
       if (!res.ok) throw new Error("save failed");
       const d = await res.json();
+      const saved = normProject(d.project);
       setProjects((list) => {
-        const i = list.findIndex((x) => x.id === d.project.id);
-        if (i >= 0) { const c = list.slice(); c[i] = d.project; return c; }
-        return [...list, d.project];
+        const i = list.findIndex((x) => x.id === saved.id);
+        if (i >= 0) { const c = list.slice(); c[i] = saved; return c; }
+        return [...list, saved];
       });
       closeModal();
       showToast(isEdit ? "Project updated" : "Project added");
@@ -139,7 +146,8 @@ export default function Dashboard() {
       });
       if (!res.ok) throw new Error("save failed");
       const d = await res.json();
-      setProjects((list) => list.map((x) => (x.id === d.project.id ? d.project : x)));
+      const saved = normProject(d.project);
+      setProjects((list) => list.map((x) => (x.id === saved.id ? saved : x)));
       showToast("Phase updated");
     } catch (e) {
       setProjects(prev);
@@ -171,7 +179,7 @@ export default function Dashboard() {
       const res = await fetch("/api/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(list) });
       if (!res.ok) throw new Error();
       const d = await res.json();
-      setProjects(d.projects || []);
+      setProjects((d.projects || []).map(normProject));
       showToast(`Imported ${d.imported} projects into the database`);
     } catch (err) { showToast("⚠ Invalid backup file"); }
     e.target.value = "";
@@ -195,9 +203,8 @@ export default function Dashboard() {
       switch (sort.key) {
         case "client": av = a.client.toLowerCase(); bv = b.client.toLowerCase(); break;
         case "deal": av = num(a.deal); bv = num(b.deal); break;
-        case "paid": av = num(a.paid); bv = num(b.paid); break;
         case "out": av = outstanding(a); bv = outstanding(b); break;
-        case "mrr": av = num(a.mrr); bv = num(b.mrr); break;
+        case "mrr": av = liveMrr(a); bv = liveMrr(b); break;
         case "work": av = WORK_STATUSES.indexOf(a.work); bv = WORK_STATUSES.indexOf(b.work); break;
         case "due": av = a.due || "9999"; bv = b.due || "9999"; break;
         default: av = a.client; bv = b.client;
@@ -273,7 +280,7 @@ export default function Dashboard() {
 
 // ---------- Projects table ----------
 function ProjectsView({ projects, filtered, q, setQ, fWork, setFWork, fPay, setFPay, sort, toggleSort, onRow, onAdd, onImport, onQuickWork }) {
-  const totalMrr = filtered.reduce((s, p) => s + num(p.mrr), 0);
+  const totalMrr = filtered.reduce((s, p) => s + liveMrr(p), 0);
   const th = (key, label, opts = {}) => (
     <th
       className={(opts.sortable === false ? "" : "sortable ") + (opts.hideSm ? "hide-sm" : "")}
@@ -325,9 +332,7 @@ function ProjectsView({ projects, filtered, q, setQ, fWork, setFWork, fPay, setF
                 {th("client", "Client / Project")}
                 {th("live", "Live URL", { sortable: false, hideSm: true })}
                 {th("deal", "Deal", { align: "right" })}
-                {th("paid", "Collected", { align: "right", hideSm: true })}
                 {th("out", "Outstanding", { align: "right", hideSm: true })}
-                {th("pay", "Payment", { sortable: false })}
                 {th("work", "Work")}
                 {th("mrr", "MRR", { align: "right" })}
                 {th("refby", "Referred by", { sortable: false, hideSm: true })}
@@ -353,9 +358,8 @@ function Badge({ text, color }) {
 }
 
 function Row({ p, onRow, onQuickWork }) {
-  const ps = payStatus(p);
   const o = outstanding(p);
-  const m = num(p.mrr);
+  const m = liveMrr(p);
   return (
     <tr onClick={() => onRow(p)}>
       <td>
@@ -370,9 +374,7 @@ function Row({ p, onRow, onQuickWork }) {
         ) : <span style={{ color: "var(--faint)" }}>—</span>}
       </td>
       <td className="num">{num(p.deal) > 0 ? money(p.deal) : "—"}</td>
-      <td className="num hide-sm">{num(p.paid) > 0 ? money(p.paid) : "—"}</td>
       <td className="num hide-sm" style={{ color: o > 0 ? "var(--amber)" : "var(--faint)" }}>{o > 0 ? money(o) : "—"}</td>
-      <td><Badge text={ps} color={payColor(ps)} /></td>
       <WorkCell p={p} onQuickWork={onQuickWork} />
       <td className="num" style={{ color: m > 0 ? "var(--green)" : "var(--faint)" }}>
         {m > 0 ? money(m) + "/mo" : "—"}
@@ -485,7 +487,7 @@ function EditModal({ form, setField, isEdit, onClose, onSave, onDelete, delConfi
             </div>
             {inp("deal", "Deal value ($)", { type: "number", ph: "8000" })}
             {inp("paid", "Amount collected ($)", { type: "number", ph: "4000" })}
-            {inp("mrr", "Monthly recurring ($)", { type: "number", ph: "150", hint: "care plan / hosting" })}
+            {inp("mrr", "Monthly recurring ($)", { type: "number", ph: "150", hint: "counts once phase is Complete" })}
             {inp("refby", "Referred by", { ph: "Partner name" })}
             {inp("refpct", "Referral %", { type: "number", ph: "10" })}
             <div className="field inline-check">
@@ -504,7 +506,12 @@ function EditModal({ form, setField, isEdit, onClose, onSave, onDelete, delConfi
               <div className="d"><div className="dl">Referral owed</div><div className="dv" style={{ color: form.refpaid ? "var(--green)" : "var(--purple)" }}>{money(refOwed(form))}{form.refpaid ? " (paid)" : ""}</div></div>
             )}
             {num(form.mrr) > 0 && (
-              <div className="d"><div className="dl">Monthly recurring</div><div className="dv">{money(num(form.mrr))}</div></div>
+              <div className="d">
+                <div className="dl">Monthly recurring</div>
+                <div className="dv" style={{ color: isDone(form) ? "var(--green)" : "var(--muted)" }}>
+                  {money(num(form.mrr))}{isDone(form) ? "" : " (starts at Complete)"}
+                </div>
+              </div>
             )}
           </div>
         </div>
@@ -526,11 +533,11 @@ function AnalyticsView({ projects }) {
     projects.forEach((p) => {
       collected += num(p.paid);
       outstandingT += outstanding(p);
-      const done = p.work === "Launched" || p.work === "Complete";
+      const done = isDone(p);
       if (!done) pipeline += Math.max(num(p.deal) - num(p.paid), 0);
-      if (done) mrr += num(p.mrr);
+      mrr += liveMrr(p);
       refOwedT += refOwed(p);
-      if (p.work === "In Progress" || p.work === "In Review" || p.work === "Lead") active++;
+      if (!done) active++;
       if (done) launched++;
     });
     // collected by month
@@ -545,11 +552,11 @@ function AnalyticsView({ projects }) {
     const monthTotal = Object.keys(byMonth).reduce((s, k) => s + byMonth[k], 0);
     // status counts
     const counts = {}; WORK_STATUSES.forEach((s) => (counts[s] = 0));
-    projects.forEach((p) => (counts[p.work] = (counts[p.work] || 0) + 1));
+    projects.forEach((p) => { const w = normWork(p.work); counts[w] = (counts[w] || 0) + 1; });
     // due / overdue
     const t = today();
-    const due = projects.filter((p) => { const d = parseDate(p.due); if (!d) return false; if (p.work === "Launched" || p.work === "Complete") return false; const dl = daysBetween(d, t); return dl >= 0 && dl <= 30; }).sort((x, y) => (x.due < y.due ? -1 : 1));
-    const over = projects.filter((p) => { const d = parseDate(p.due); if (!d) return false; if (p.work === "Launched" || p.work === "Complete") return false; return daysBetween(d, t) < 0; }).sort((x, y) => (x.due < y.due ? -1 : 1));
+    const due = projects.filter((p) => { const d = parseDate(p.due); if (!d) return false; if (isDone(p)) return false; const dl = daysBetween(d, t); return dl >= 0 && dl <= 30; }).sort((x, y) => (x.due < y.due ? -1 : 1));
+    const over = projects.filter((p) => { const d = parseDate(p.due); if (!d) return false; if (isDone(p)) return false; return daysBetween(d, t) < 0; }).sort((x, y) => (x.due < y.due ? -1 : 1));
     // partners
     const pmap = {};
     projects.forEach((p) => { if (!p.refby) return; if (!pmap[p.refby]) pmap[p.refby] = { count: 0, collected: 0, owed: 0 }; pmap[p.refby].count++; pmap[p.refby].collected += num(p.paid); pmap[p.refby].owed += refOwed(p); });
@@ -563,9 +570,9 @@ function AnalyticsView({ projects }) {
     { label: "Collected", val: money(a.collected), cls: "green", sub: `${projects.length} projects total` },
     { label: "Outstanding", val: money(a.outstandingT), cls: "amber", sub: "owed to you" },
     { label: "Active pipeline", val: money(a.pipeline), cls: "blue", sub: `${a.active} active project${a.active === 1 ? "" : "s"}` },
-    { label: "Recurring / mo (MRR)", val: money(a.mrr), cls: "purple", sub: "live care plans" },
+    { label: "Recurring / mo (MRR)", val: money(a.mrr), cls: "purple", sub: "complete jobs only" },
     { label: "Referral owed", val: money(a.refOwedT), cls: a.refOwedT > 0 ? "purple" : "", sub: "to partners (unpaid)" },
-    { label: "Launched", val: String(a.launched), cls: "", sub: "sites live" },
+    { label: "Complete", val: String(a.launched), cls: "", sub: "jobs finished" },
   ];
   const maxMonth = Math.max(1, ...a.monthKeys.map((k) => a.byMonth[k]));
   const maxStatus = Math.max(1, ...WORK_STATUSES.map((s) => a.counts[s]));

@@ -1,9 +1,10 @@
 "use client";
 import { useState, useEffect, useMemo, useRef } from "react";
 
-const WORK_STATUSES = ["Lead", "In Progress", "In Review", "Complete"];
+const WORK_STATUSES = ["Lead", "In Progress", "In Review", "Complete", "Recurring"];
 const WORK_COLORS = {
   Lead: "#8b909b", "In Progress": "#58a6ff", "In Review": "#bc8cff", Complete: "#3fb950",
+  Recurring: "#e3b341",
 };
 // legacy phases from the old 7-status list, folded into the 4 that remain
 const LEGACY_WORK = { "Payment Pending": "In Progress", "On Hold": "In Progress", Launched: "Complete" };
@@ -16,8 +17,11 @@ const num = (v) => { const n = parseFloat(v); return isFinite(n) && n > 0 ? n : 
 const money = (n) => "$" + Math.round(n).toLocaleString("en-US");
 const outstanding = (p) => Math.max(0, num(p.deal) - num(p.paid));
 const refOwed = (p) => (p.refpaid ? 0 : (num(p.paid) * num(p.refpct)) / 100);
-const isDone = (p) => normWork(p.work) === "Complete";
-// MRR only counts once the job is Complete and the retainer is actually billing
+// Recurring = the build shipped AND a retainer is actively billing.
+// Complete = shipped, one-time only. Both count as finished work.
+const isRecurring = (p) => normWork(p.work) === "Recurring";
+const isDone = (p) => { const w = normWork(p.work); return w === "Complete" || w === "Recurring"; };
+// MRR only counts once the job has shipped and the retainer is actually billing
 const liveMrr = (p) => (isDone(p) ? num(p.mrr) : 0);
 function payStatus(p) {
   const d = num(p.deal), pd = num(p.paid);
@@ -510,7 +514,7 @@ function EditModal({ form, setField, isEdit, onClose, onSave, onDelete, delConfi
               <div className="d">
                 <div className="dl">Monthly recurring</div>
                 <div className="dv" style={{ color: isDone(form) ? "var(--green)" : "var(--muted)" }}>
-                  {money(num(form.mrr))}{isDone(form) ? "" : " (starts at Complete)"}
+                  {money(num(form.mrr))}{isDone(form) ? "" : " (starts at Complete / Recurring)"}
                 </div>
               </div>
             )}
@@ -530,7 +534,7 @@ function EditModal({ form, setField, isEdit, onClose, onSave, onDelete, delConfi
 // ---------- Analytics ----------
 function AnalyticsView({ projects }) {
   const a = useMemo(() => {
-    let collected = 0, outstandingT = 0, pipeline = 0, mrr = 0, refOwedT = 0, active = 0, launched = 0;
+    let collected = 0, outstandingT = 0, pipeline = 0, mrr = 0, refOwedT = 0, active = 0, launched = 0, recurringCount = 0;
     projects.forEach((p) => {
       collected += num(p.paid);
       outstandingT += outstanding(p);
@@ -540,6 +544,7 @@ function AnalyticsView({ projects }) {
       refOwedT += refOwed(p);
       if (!done) active++;
       if (done) launched++;
+      if (isRecurring(p) && num(p.mrr) > 0) recurringCount++;
     });
     // collected by month
     const byMonth = {};
@@ -564,16 +569,16 @@ function AnalyticsView({ projects }) {
     const partners = Object.keys(pmap).map((k) => ({ name: k, ...pmap[k] })).sort((x, y) => y.collected - x.collected);
     // recent launches
     const recent = projects.filter((p) => p.launch).sort((x, y) => (x.launch < y.launch ? 1 : -1)).slice(0, 6);
-    return { collected, outstandingT, pipeline, mrr, refOwedT, active, launched, byMonth, monthKeys, monthTotal, counts, due, over, partners, recent };
+    return { collected, outstandingT, pipeline, mrr, refOwedT, active, launched, recurringCount, byMonth, monthKeys, monthTotal, counts, due, over, partners, recent };
   }, [projects]);
 
   const kpis = [
     { label: "Collected", val: money(a.collected), cls: "green", sub: `${projects.length} projects total` },
     { label: "Outstanding", val: money(a.outstandingT), cls: "amber", sub: "owed to you" },
     { label: "Active pipeline", val: money(a.pipeline), cls: "blue", sub: `${a.active} active project${a.active === 1 ? "" : "s"}` },
-    { label: "Recurring / mo (MRR)", val: money(a.mrr), cls: "purple", sub: "complete jobs only" },
+    { label: "Recurring / mo (MRR)", val: money(a.mrr), cls: "purple", sub: `${a.recurringCount} client${a.recurringCount === 1 ? "" : "s"} on retainer` },
     { label: "Referral owed", val: money(a.refOwedT), cls: a.refOwedT > 0 ? "purple" : "", sub: "to partners (unpaid)" },
-    { label: "Complete", val: String(a.launched), cls: "", sub: "jobs finished" },
+    { label: "Shipped", val: String(a.launched), cls: "", sub: "complete + recurring" },
   ];
   const maxMonth = Math.max(1, ...a.monthKeys.map((k) => a.byMonth[k]));
   const maxStatus = Math.max(1, ...WORK_STATUSES.map((s) => a.counts[s]));

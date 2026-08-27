@@ -23,6 +23,18 @@ const isRecurring = (p) => normWork(p.work) === "Recurring";
 const isDone = (p) => { const w = normWork(p.work); return w === "Complete" || w === "Recurring"; };
 // MRR only counts once the job has shipped and the retainer is actually billing
 const liveMrr = (p) => (isDone(p) ? num(p.mrr) : 0);
+// Full months of retainer billed so far, counted from launch (falls back to due/start).
+const monthsBilled = (p) => {
+  if (!isDone(p) || num(p.mrr) <= 0) return 0;
+  const d = parseDate(p.launch || p.due || p.start);
+  if (!d) return 0;
+  const t = today();
+  let m = (t.getFullYear() - d.getFullYear()) * 12 + (t.getMonth() - d.getMonth());
+  if (t.getDate() < d.getDate()) m -= 1;
+  return Math.max(0, m);
+};
+// Recurring money actually collected to date: months billed x monthly rate
+const recurringCollected = (p) => monthsBilled(p) * num(p.mrr);
 function payStatus(p) {
   const d = num(p.deal), pd = num(p.paid);
   if (d <= 0) return "No deal set"; // no deal amount => completion is undefined
@@ -565,8 +577,18 @@ function AnalyticsView({ projects }) {
     const over = projects.filter((p) => { const d = parseDate(p.due); if (!d) return false; if (isDone(p)) return false; return daysBetween(d, t) < 0; }).sort((x, y) => (x.due < y.due ? -1 : 1));
     // partners
     const pmap = {};
-    projects.forEach((p) => { if (!p.refby) return; if (!pmap[p.refby]) pmap[p.refby] = { count: 0, collected: 0, owed: 0 }; pmap[p.refby].count++; pmap[p.refby].collected += num(p.paid); pmap[p.refby].owed += refOwed(p); });
-    const partners = Object.keys(pmap).map((k) => ({ name: k, ...pmap[k] })).sort((x, y) => y.collected - x.collected);
+    projects.forEach((p) => {
+      if (!p.refby) return;
+      if (!pmap[p.refby]) pmap[p.refby] = { count: 0, oneTime: 0, recurring: 0, mrr: 0, owed: 0 };
+      pmap[p.refby].count++;
+      pmap[p.refby].oneTime += num(p.paid);
+      pmap[p.refby].recurring += recurringCollected(p);
+      pmap[p.refby].mrr += liveMrr(p);
+      pmap[p.refby].owed += refOwed(p);
+    });
+    const partners = Object.keys(pmap)
+      .map((k) => ({ name: k, ...pmap[k], collected: pmap[k].oneTime + pmap[k].recurring }))
+      .sort((x, y) => y.collected - x.collected);
     // recent launches
     const recent = projects.filter((p) => p.launch).sort((x, y) => (x.launch < y.launch ? 1 : -1)).slice(0, 6);
     return { collected, outstandingT, pipeline, mrr, refOwedT, active, launched, recurringCount, byMonth, monthKeys, monthTotal, counts, due, over, partners, recent };
@@ -642,7 +664,12 @@ function AnalyticsView({ projects }) {
       <div className="grid-2">
         <div className="card">
           <h4>Top referral partners</h4>
-          <ListBlock items={a.partners} empty="No referral partners logged yet." render={(x) => ({ name: x.name, sub: `${x.count} referral${x.count === 1 ? "" : "s"} · ${money(x.collected)} collected`, right: x.owed > 0 ? money(x.owed) + " owed" : "—", color: x.owed > 0 ? "var(--purple)" : "var(--faint)" })} />
+          <ListBlock items={a.partners} empty="No referral partners logged yet." render={(x) => ({
+            name: x.name,
+            sub: `${x.count} referral${x.count === 1 ? "" : "s"} · ${money(x.collected)} collected` + (x.recurring > 0 ? ` (${money(x.oneTime)} builds + ${money(x.recurring)} recurring)` : ""),
+            right: x.owed > 0 ? money(x.owed) + " owed" : (x.mrr > 0 ? money(x.mrr) + "/mo" : "—"),
+            color: x.owed > 0 ? "var(--purple)" : (x.mrr > 0 ? "var(--green)" : "var(--faint)"),
+          })} />
         </div>
         <div className="card">
           <h4>Recently launched</h4>

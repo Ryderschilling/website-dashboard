@@ -1,26 +1,34 @@
 "use client";
 import { useState, useEffect, useMemo, useRef } from "react";
+import { Sidebar, SidebarBody, SidebarLink, useSidebar } from "@/components/ui/sidebar";
+import { motion } from "framer-motion";
+import PipelineBoard from "@/components/PipelineBoard";
+import { LayoutList, KanbanSquare, BarChart3, Plus, Upload, Download, FileDown, LogOut } from "lucide-react";
+import {
+  STAGES, STAGE_COLORS, STAGE_HINTS, normStage,
+  isDone as stageIsDone, isLost, isRecurring as stageIsRecurring, isOpen,
+  daysInStage, stageHealth, stageIndex,
+  MONTHLY_TARGET, DEAL_FLOOR, RETAINER_TIERS, INCOME_TYPES, isClient, FUNNEL,
+} from "@/lib/pipeline";
 
-const WORK_STATUSES = ["Lead", "In Progress", "In Review", "Complete", "Recurring"];
-const WORK_COLORS = {
-  Lead: "#8b909b", "In Progress": "#58a6ff", "In Review": "#bc8cff", Complete: "#3fb950",
-  Recurring: "#e3b341",
-};
-// legacy phases from the old 7-status list, folded into the 4 that remain
-const LEGACY_WORK = { "Payment Pending": "In Progress", "On Hold": "In Progress", Launched: "Complete" };
-const normWork = (w) => (WORK_STATUSES.includes(w) ? w : LEGACY_WORK[w] || "Lead");
+const WORK_STATUSES = STAGES;
+const WORK_COLORS = STAGE_COLORS;
+const normWork = normStage;
 const normProject = (p) => ({ ...p, work: normWork(p.work) });
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const HEALTH_COLOR = { ok: "var(--faint)", warn: "var(--amber)", stale: "var(--red)" };
 
 // ---- helpers ----
 const num = (v) => { const n = parseFloat(v); return isFinite(n) && n > 0 ? n : 0; };
 const money = (n) => "$" + Math.round(n).toLocaleString("en-US");
+const plural = (n, word) => n + " " + word + (n === 1 ? "" : "s");
 const outstanding = (p) => Math.max(0, num(p.deal) - num(p.paid));
 const refOwed = (p) => (p.refpaid ? 0 : (num(p.paid) * num(p.refpct)) / 100);
 // Recurring = the build shipped AND a retainer is actively billing.
 // Complete = shipped, one-time only. Both count as finished work.
-const isRecurring = (p) => normWork(p.work) === "Recurring";
-const isDone = (p) => { const w = normWork(p.work); return w === "Complete" || w === "Recurring"; };
+const isRecurring = (p) => stageIsRecurring(p.work);
+const isDone = (p) => stageIsDone(p.work);
+const isDead = (p) => isLost(p.work);
 // MRR only counts once the job has shipped and the retainer is actually billing
 const liveMrr = (p) => (isDone(p) ? num(p.mrr) : 0);
 // Full months of retainer billed so far, counted from launch (falls back to due/start).
@@ -65,11 +73,12 @@ function downloadBlob(blob, name) {
 const BLANK = {
   id: "", client: "", project: "", live: "", staging: "", niche: "", work: "Lead",
   deal: "", paid: "", mrr: "", refby: "", refpct: "", refpaid: false,
-  start: "", due: "", launch: "", notes: "",
+  start: "", due: "", launch: "", notes: "", lostReason: "", sortOrder: 0, stageAt: "", incomeType: "client",
 };
 
 export default function Dashboard() {
   const [projects, setProjects] = useState([]);
+  const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("projects");
   const [q, setQ] = useState("");
@@ -79,6 +88,7 @@ export default function Dashboard() {
   const [editing, setEditing] = useState(null); // null=closed, {}=new, {..}=edit
   const [form, setForm] = useState(BLANK);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [delConfirm, setDelConfirm] = useState(false);
   const fileRef = useRef(null);
@@ -101,6 +111,7 @@ export default function Dashboard() {
       if (res.status === 401) { window.location.href = "/login"; return; }
       const d = await res.json();
       setProjects((d.projects || []).map(normProject));
+      setEvents(d.events || []);
     } catch (e) { showToast("⚠ Could not reach the database"); }
     setLoading(false);
   }
@@ -134,6 +145,8 @@ export default function Dashboard() {
       });
       closeModal();
       showToast(isEdit ? "Project updated" : "Project added");
+      // the stage may have moved, so pull the fresh event log for Analytics
+      refresh();
     } catch (e) { showToast("⚠ Save failed — check your connection"); }
   }
 
@@ -171,6 +184,33 @@ export default function Dashboard() {
     }
   }
 
+  // ---- board drag/drop persistence ----
+  // Optimistic: paint the new order immediately, roll back if the write fails.
+  async function saveBoard(moves) {
+    const prev = projects;
+    const rank = {};
+    moves.forEach((m) => (rank[m.id] = m));
+    setProjects((list) =>
+      list.map((x) => (rank[x.id] ? { ...x, work: rank[x.id].work, sortOrder: rank[x.id].sortOrder } : x))
+    );
+    try {
+      const res = await fetch("/api/projects/reorder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ moves }),
+      });
+      if (!res.ok) throw new Error("reorder failed");
+      const d = await res.json();
+      setProjects((d.projects || []).map(normProject));
+      if (d.events) setEvents(d.events);
+      return true;
+    } catch (e) {
+      setProjects(prev);
+      showToast("\u26a0 Could not save the move");
+      return false;
+    }
+  }
+
   // ---- import / export ----
   function backup() {
     downloadBlob(new Blob([JSON.stringify(projects, null, 2)], { type: "application/json" }), "ryder-schilling-clients-backup.json");
@@ -205,6 +245,8 @@ export default function Dashboard() {
   const filtered = useMemo(() => {
     const ql = q.toLowerCase();
     let list = projects.filter((p) => {
+      // Lost deals stay out of the table unless you filter for them on purpose.
+      if (!fWork && isDead(p)) return false;
       if (fWork && p.work !== fWork) return false;
       if (fPay && payStatus(p) !== fPay) return false;
       if (ql) {
@@ -222,7 +264,8 @@ export default function Dashboard() {
         case "paid": av = num(a.paid); bv = num(b.paid); break;
         case "out": av = outstanding(a); bv = outstanding(b); break;
         case "mrr": av = liveMrr(a); bv = liveMrr(b); break;
-        case "work": av = WORK_STATUSES.indexOf(a.work); bv = WORK_STATUSES.indexOf(b.work); break;
+        case "work": av = stageIndex(a.work); bv = stageIndex(b.work); break;
+        case "age": av = daysInStage(a) ?? -1; bv = daysInStage(b) ?? -1; break;
         case "due": av = a.due || "9999"; bv = b.due || "9999"; break;
         default: av = a.client; bv = b.client;
       }
@@ -240,42 +283,114 @@ export default function Dashboard() {
     return <div className="loading"><span className="spinner" /> Loading your clients…</div>;
   }
 
+  const openCount = projects.filter((p) => isOpen(p.work)).length;
+  const staleCount = projects.filter((p) => stageHealth(p) === "stale").length;
+
+  const NAV = [
+    { key: "projects",  label: "Projects",  icon: <LayoutList size={18} />,     badge: projects.length || null },
+    { key: "pipeline",  label: "Pipeline",  icon: <KanbanSquare size={18} />,   badge: openCount || null },
+    { key: "analytics", label: "Analytics", icon: <BarChart3 size={18} />,      badge: null },
+  ];
+
+  const menu = (
+    <div className="menu">
+      <button className="btn ghost" onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}>•••</button>
+      <div className={"menu-list" + (menuOpen ? " open" : "")}>
+        <button onClick={triggerImport}>Import (JSON backup)</button>
+        <button onClick={backup}>Backup (JSON)</button>
+        <button onClick={exportCsv}>Export CSV</button>
+        <button onClick={logout} style={{ color: "var(--muted)" }}>Log out</button>
+      </div>
+    </div>
+  );
+
+  const nav = (
+    <SidebarBody className="justify-between gap-8">
+      <div className="flex flex-col flex-1 overflow-y-auto overflow-x-hidden">
+        <div className="side-brand">
+          <span className="logo">R</span>
+          <SideLabel>Ryder Schilling</SideLabel>
+        </div>
+        <div className="side-links">
+          {NAV.map((link) => (
+            <SidebarLink
+              key={link.key}
+              link={link}
+              active={tab === link.key}
+              onSelect={(k) => { setTab(k); setSidebarOpen(false); }}
+            />
+          ))}
+        </div>
+      </div>
+      <div className="side-foot">
+        <SidebarLink
+          link={{ key: "add", label: "Add project", icon: <Plus size={18} /> }}
+          onSelect={() => { openModal(null); setSidebarOpen(false); }}
+        />
+        <SidebarLink
+          link={{ key: "import", label: "Import backup", icon: <Upload size={18} /> }}
+          onSelect={() => { triggerImport(); setSidebarOpen(false); }}
+        />
+        <SidebarLink
+          link={{ key: "backup", label: "Backup JSON", icon: <Download size={18} /> }}
+          onSelect={() => backup()}
+        />
+        <SidebarLink
+          link={{ key: "csv", label: "Export CSV", icon: <FileDown size={18} /> }}
+          onSelect={() => exportCsv()}
+        />
+        <SidebarLink
+          link={{ key: "logout", label: "Log out", icon: <LogOut size={18} /> }}
+          onSelect={() => logout()}
+        />
+      </div>
+    </SidebarBody>
+  );
+
   return (
     <>
-      <header className="top">
-        <div className="wrap top-inner">
-          <div className="brand"><span className="logo">R</span> Ryder Schilling <span className="dim">· Clients</span></div>
-          <nav className="tabs">
-            <button className={"tab" + (tab === "projects" ? " active" : "")} onClick={() => setTab("projects")}>Projects</button>
-            <button className={"tab" + (tab === "analytics" ? " active" : "")} onClick={() => setTab("analytics")}>Analytics</button>
-          </nav>
-          <div className="top-actions">
-            <button className="btn primary" onClick={() => openModal(null)}>+ Add Project</button>
-            <div className="menu">
-              <button className="btn ghost" onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}>•••</button>
-              <div className={"menu-list" + (menuOpen ? " open" : "")}>
-                <button onClick={triggerImport}>Import (JSON backup)</button>
-                <button onClick={backup}>Backup (JSON)</button>
-                <button onClick={exportCsv}>Export CSV</button>
-                <button onClick={logout} style={{ color: "var(--muted)" }}>Log out</button>
+      <div className="app-shell">
+        <Sidebar open={sidebarOpen} setOpen={setSidebarOpen}>{nav}</Sidebar>
+
+        <div className="app-main">
+          <header className="top">
+            <div className="wrap top-inner">
+              <div className="brand">
+                {tab === "pipeline" ? "Pipeline" : tab === "analytics" ? "Analytics" : "Clients"}
+                {staleCount > 0 && tab !== "analytics" ? (
+                  <span className="dim" style={{ color: "var(--red)", fontSize: 12.5, marginLeft: 8 }}>
+                    {staleCount} stuck
+                  </span>
+                ) : null}
+              </div>
+              <div className="top-actions">
+                <button className="btn primary" onClick={() => openModal(null)}>+ Add Project</button>
+                {menu}
               </div>
             </div>
-          </div>
-        </div>
-      </header>
+          </header>
 
-      <main className="wrap">
-        {tab === "projects" ? (
-          <ProjectsView
-            projects={projects} filtered={filtered} q={q} setQ={setQ}
-            fWork={fWork} setFWork={setFWork} fPay={fPay} setFPay={setFPay}
-            sort={sort} toggleSort={toggleSort} onRow={openModal} onAdd={() => openModal(null)}
-            onImport={triggerImport} onQuickWork={quickWork}
-          />
-        ) : (
-          <AnalyticsView projects={projects} />
-        )}
-      </main>
+          <main className="wrap">
+            {tab === "projects" ? (
+              <ProjectsView
+                projects={projects} filtered={filtered} q={q} setQ={setQ}
+                fWork={fWork} setFWork={setFWork} fPay={fPay} setFPay={setFPay}
+                sort={sort} toggleSort={toggleSort} onRow={openModal} onAdd={() => openModal(null)}
+                onImport={triggerImport} onQuickWork={quickWork}
+              />
+            ) : tab === "pipeline" ? (
+              <PipelineBoard
+                projects={projects}
+                onBoardChange={saveBoard}
+                onOpen={openModal}
+                showToast={showToast}
+              />
+            ) : (
+              <AnalyticsView projects={projects} events={events} />
+            )}
+          </main>
+        </div>
+      </div>
 
       {editing && (
         <EditModal
@@ -293,6 +408,20 @@ export default function Dashboard() {
     await fetch("/api/auth", { method: "DELETE" });
     window.location.href = "/login";
   }
+}
+
+// Brand text that fades with the rail.
+function SideLabel({ children }) {
+  const { open, animate } = useSidebar();
+  return (
+    <motion.span
+      animate={{ opacity: animate ? (open ? 1 : 0) : 1 }}
+      transition={{ duration: 0.18 }}
+      className="text-[14px] font-bold tracking-tight whitespace-nowrap"
+    >
+      {children}
+    </motion.span>
+  );
 }
 
 // ---------- Projects table ----------
@@ -317,7 +446,7 @@ function ProjectsView({ projects, filtered, q, setQ, fWork, setFWork, fPay, setF
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search client, project, or partner…" />
         </div>
         <select value={fWork} onChange={(e) => setFWork(e.target.value)}>
-          <option value="">All work status</option>
+          <option value="">All stages</option>
           {WORK_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
         <select value={fPay} onChange={(e) => setFPay(e.target.value)}>
@@ -350,7 +479,8 @@ function ProjectsView({ projects, filtered, q, setQ, fWork, setFWork, fPay, setF
                 {th("deal", "Deal", { align: "right" })}
                 {th("paid", "Collected", { align: "right", hideSm: true })}
                 {th("out", "Outstanding", { align: "right", hideSm: true })}
-                {th("work", "Work")}
+                {th("work", "Stage")}
+                {th("age", "In stage", { hideSm: true })}
                 {th("mrr", "MRR", { align: "right" })}
                 {th("refby", "Referred by", { sortable: false, hideSm: true })}
                 <th></th>
@@ -393,6 +523,7 @@ function Row({ p, onRow, onQuickWork }) {
       <td className="num hide-sm" style={{ color: num(p.paid) > 0 ? "var(--green)" : "var(--faint)" }}>{num(p.paid) > 0 ? money(p.paid) : "—"}</td>
       <td className="num hide-sm" style={{ color: o > 0 ? "var(--amber)" : "var(--faint)" }}>{o > 0 ? money(o) : "—"}</td>
       <WorkCell p={p} onQuickWork={onQuickWork} />
+      <AgeCell p={p} />
       <td className="num" style={{ color: m > 0 ? "var(--green)" : "var(--faint)" }}>
         {m > 0 ? money(m) + "/mo" : "—"}
       </td>
@@ -401,6 +532,20 @@ function Row({ p, onRow, onQuickWork }) {
         <button className="icon-btn" title="Edit" onClick={(e) => { e.stopPropagation(); onRow(p); }}>&#9998;</button>
       </td>
     </tr>
+  );
+}
+
+// Days the project has sat in its current stage. Goes amber past the stage's
+// normal window, red past double it. Finished stages never age.
+function AgeCell({ p }) {
+  const d = daysInStage(p);
+  const h = stageHealth(p);
+  if (!h || d == null) return <td className="hide-sm" style={{ color: "var(--faint)" }}>—</td>;
+  return (
+    <td className="hide-sm age-cell" style={{ color: HEALTH_COLOR[h], fontWeight: h === "ok" ? 400 : 600 }}>
+      {d === 0 ? "today" : d + "d"}
+      {h === "stale" ? " ⚠" : ""}
+    </td>
   );
 }
 
@@ -497,14 +642,22 @@ function EditModal({ form, setField, isEdit, onClose, onSave, onDelete, delConfi
             {inp("staging", "Staging / repo URL", { ph: "https://staging.vercel.app" })}
             {inp("niche", "Niche / type", { ph: "Med spa" })}
             <div className="field">
-              <label>Work status</label>
+              <label>Stage<span className="hint"> {STAGE_HINTS[normStage(form.work)]}</span></label>
               <select value={form.work} onChange={(e) => setField("work", e.target.value)}>
                 {WORK_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
+            {isLost(form.work) && inp("lostReason", "Why it was lost", { ph: "Price, went with someone else, ghosted…" })}
+            <div className="field">
+              <label>Income type<span className="hint"> contractor pay is kept out of client metrics</span></label>
+              <select value={form.incomeType || "client"} onChange={(e) => setField("incomeType", e.target.value)}>
+                <option value="client">Client work</option>
+                <option value="contractor">Contractor income</option>
+              </select>
+            </div>
             {inp("deal", "Deal value ($)", { type: "number", ph: "8000" })}
             {inp("paid", "Amount collected ($)", { type: "number", ph: "4000" })}
-            {inp("mrr", "Monthly recurring ($)", { type: "number", ph: "150", hint: "counts once phase is Complete" })}
+            {inp("mrr", "Monthly recurring ($)", { type: "number", ph: "150", hint: "counts once the stage is Complete or Recurring" })}
             {inp("refby", "Referred by", { ph: "Partner name" })}
             {inp("refpct", "Referral %", { type: "number", ph: "10" })}
             <div className="field inline-check">
@@ -517,6 +670,14 @@ function EditModal({ form, setField, isEdit, onClose, onSave, onDelete, delConfi
             {inp("notes", "Notes", { full: true, textarea: true, ph: "Anything worth remembering…" })}
           </div>
           <div className="derived">
+            {isEdit && daysInStage(form) != null && stageHealth(form) && (
+              <div className="d">
+                <div className="dl">Time in stage</div>
+                <div className="dv" style={{ color: HEALTH_COLOR[stageHealth(form)] }}>
+                  {daysInStage(form)} day{daysInStage(form) === 1 ? "" : "s"}
+                </div>
+              </div>
+            )}
             <div className="d"><div className="dl">Payment status</div><div className="dv" style={{ color: payColor(ps) }}>{ps}</div></div>
             <div className="d"><div className="dl">Outstanding</div><div className="dv" style={{ color: outstanding(form) > 0 ? "var(--amber)" : "var(--green)" }}>{money(outstanding(form))}</div></div>
             {(form.refby || num(form.refpct) > 0) && (
@@ -544,40 +705,130 @@ function EditModal({ form, setField, isEdit, onClose, onSave, onDelete, delConfi
 }
 
 // ---------- Analytics ----------
-function AnalyticsView({ projects }) {
+// One question this page has to answer: am I on track for $10k a month, and
+// what is blocking it. Everything below serves that.
+function AnalyticsView({ projects, events }) {
   const a = useMemo(() => {
-    let collected = 0, outstandingT = 0, pipeline = 0, mrr = 0, refOwedT = 0, active = 0, launched = 0, recurringCount = 0;
-    projects.forEach((p) => {
+    // Client work only. Contractor paychecks are real income but they are not
+    // the business, and mixing them hides what the business is actually doing.
+    const clients = projects.filter(isClient);
+    const contractors = projects.filter((p) => !isClient(p));
+
+    let collected = 0, outstandingT = 0, pipeline = 0, mrr = 0, refOwedT = 0,
+        active = 0, launched = 0, recurringCount = 0, lostCount = 0, lostValue = 0;
+    clients.forEach((p) => {
       collected += num(p.paid);
-      outstandingT += outstanding(p);
-      const done = isDone(p);
-      if (!done) pipeline += Math.max(num(p.deal) - num(p.paid), 0);
+      const done = isDone(p), dead = isDead(p);
+      // Only money for work that is actually sold. An unsigned $9k lead is
+      // pipeline, not accounts receivable.
+      if (!dead && (num(p.paid) > 0 || stageIndex(p.work) >= stageIndex("In Progress"))) {
+        outstandingT += outstanding(p);
+      }
+      if (!done && !dead) pipeline += Math.max(num(p.deal) - num(p.paid), 0);
       mrr += liveMrr(p);
-      refOwedT += refOwed(p);
-      if (!done) active++;
+      if (!dead) refOwedT += refOwed(p);
+      if (!done && !dead) active++;
       if (done) launched++;
+      if (dead) { lostCount++; lostValue += num(p.deal); }
       if (isRecurring(p) && num(p.mrr) > 0) recurringCount++;
     });
-    // collected by month
-    const byMonth = {};
-    projects.forEach((p) => {
+    const contractorMrr = contractors.reduce((s, p) => s + liveMrr(p), 0);
+    const contractorCollected = contractors.reduce((s, p) => s + num(p.paid), 0);
+
+    const decided = launched + lostCount;
+    const winRate = decided ? Math.round((launched / decided) * 100) : null;
+
+    // --- run rate toward $10k -------------------------------------------------
+    // One-time revenue has no payment dates, so it is averaged over the window
+    // of project dates we do have. Undated money is reported, never guessed.
+    const dated = [], undatedPaid = [];
+    clients.forEach((p) => {
       if (num(p.paid) <= 0) return;
-      const ds = p.launch || p.due || p.start; const d = parseDate(ds); if (!d) return;
+      const d = parseDate(p.launch || p.due || p.start);
+      if (d) dated.push({ d, v: num(p.paid) }); else undatedPaid.push(num(p.paid));
+    });
+    const undatedTotal = undatedPaid.reduce((s, v) => s + v, 0);
+    let spanMonths = 0, datedTotal = 0;
+    if (dated.length) {
+      const first = dated.reduce((m, x) => (x.d < m ? x.d : m), dated[0].d);
+      const t = today();
+      spanMonths = Math.max(1, (t.getFullYear() - first.getFullYear()) * 12 + (t.getMonth() - first.getMonth()) + 1);
+      datedTotal = dated.reduce((s, x) => s + x.v, 0);
+    }
+    const oneTimePerMonth = spanMonths ? datedTotal / spanMonths : 0;
+    const clientRunRate = mrr + oneTimePerMonth;
+    const totalRunRate = clientRunRate + contractorMrr;
+    const gap = Math.max(0, MONTHLY_TARGET - totalRunRate);
+
+    // --- deal size vs the floor ----------------------------------------------
+    const paidDeals = clients.filter((p) => num(p.paid) > 0);
+    const avgDeal = paidDeals.length ? collected / paidDeals.length : 0;
+    const belowFloor = paidDeals.filter((p) => num(p.paid) < DEAL_FLOOR).length;
+    const biggest = paidDeals.reduce((m, p) => Math.max(m, num(p.paid)), 0);
+
+    // --- retainer attach rate -------------------------------------------------
+    const shipped = clients.filter(isDone);
+    const withRetainer = shipped.filter((p) => num(p.mrr) > 0);
+    const attachRate = shipped.length ? Math.round((withRetainer.length / shipped.length) * 100) : null;
+    const noRetainer = shipped.filter((p) => num(p.mrr) <= 0);
+    // What closing that gap is worth at the real retainer prices.
+    const attachUpside = noRetainer.length * RETAINER_TIERS[0];
+
+    // --- acquisition funnel ---------------------------------------------------
+    // Furthest stage each project has ever reached: its event history plus
+    // wherever it sits now. Reaching a stage counts even if it later died.
+    // Lost sits last in the stage list but is not "further" than anything, so it
+    // never seeds this. A dead deal still counts in every stage it passed through,
+    // which is the whole point of a conversion rate.
+    const furthest = {};
+    clients.forEach((p) => (furthest[p.id] = isLost(p.work) ? -1 : stageIndex(p.work)));
+    (events || []).forEach((e) => {
+      if (!(e.projectId in furthest) || isLost(e.to)) return;
+      const i = stageIndex(e.to);
+      if (i > furthest[e.projectId]) furthest[e.projectId] = i;
+    });
+    // A lost deal with no recorded history was still a lead once.
+    Object.keys(furthest).forEach((k) => { if (furthest[k] < 0) furthest[k] = 0; });
+
+    const wonIdx = stageIndex("Complete");
+    const funnel = FUNNEL.map((stage, i) => ({
+      stage,
+      reached: clients.filter((p) => furthest[p.id] >= stageIndex(stage)).length,
+      next: FUNNEL[i + 1] || "Won",
+    }));
+    funnel.push({ stage: "Won", reached: clients.filter((p) => furthest[p.id] >= wonIdx).length, next: null });
+
+    // --- pipeline coverage ----------------------------------------------------
+    // Standard sales health check: open new-business value against the target.
+    // Under 3x means the month after next is already thin.
+    const newBiz = clients.filter((p) => isOpen(p.work) && stageIndex(p.work) <= stageIndex("Proposal"));
+    const newBizValue = newBiz.reduce((s, p) => s + num(p.deal), 0);
+    const coverage = MONTHLY_TARGET > 0 ? newBizValue / MONTHLY_TARGET : 0;
+
+    // --- data quality ---------------------------------------------------------
+    const noDeal = clients.filter((p) => num(p.deal) <= 0).length;
+    const noDates = clients.filter((p) => !p.launch && !p.due && !p.start).length;
+
+    // collected by project date (NOT payment date — labelled as such)
+    const byMonth = {};
+    clients.forEach((p) => {
+      if (num(p.paid) <= 0) return;
+      const d = parseDate(p.launch || p.due || p.start); if (!d) return;
       const key = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
       byMonth[key] = (byMonth[key] || 0) + num(p.paid);
     });
     const monthKeys = Object.keys(byMonth).sort().slice(-8);
-    const monthTotal = Object.keys(byMonth).reduce((s, k) => s + byMonth[k], 0);
-    // status counts
-    const counts = {}; WORK_STATUSES.forEach((s) => (counts[s] = 0));
-    projects.forEach((p) => { const w = normWork(p.work); counts[w] = (counts[w] || 0) + 1; });
-    // due / overdue
+
     const t = today();
-    const due = projects.filter((p) => { const d = parseDate(p.due); if (!d) return false; if (isDone(p)) return false; const dl = daysBetween(d, t); return dl >= 0 && dl <= 30; }).sort((x, y) => (x.due < y.due ? -1 : 1));
-    const over = projects.filter((p) => { const d = parseDate(p.due); if (!d) return false; if (isDone(p)) return false; return daysBetween(d, t) < 0; }).sort((x, y) => (x.due < y.due ? -1 : 1));
-    // partners
+    const due = clients.filter((p) => { const d = parseDate(p.due); if (!d) return false; if (isDone(p) || isDead(p)) return false; const dl = daysBetween(d, t); return dl >= 0 && dl <= 30; }).sort((x, y) => (x.due < y.due ? -1 : 1));
+    const over = clients.filter((p) => { const d = parseDate(p.due); if (!d) return false; if (isDone(p) || isDead(p)) return false; return daysBetween(d, t) < 0; }).sort((x, y) => (x.due < y.due ? -1 : 1));
+    const stuck = clients.filter((p) => stageHealth(p) === "stale").sort((x, y) => (daysInStage(y) || 0) - (daysInStage(x) || 0));
+
+    const counts = {}; STAGES.forEach((st) => (counts[st] = 0));
+    clients.forEach((p) => { counts[normStage(p.work)] = (counts[normStage(p.work)] || 0) + 1; });
+
     const pmap = {};
-    projects.forEach((p) => {
+    clients.forEach((p) => {
       if (!p.refby) return;
       if (!pmap[p.refby]) pmap[p.refby] = { count: 0, oneTime: 0, recurring: 0, mrr: 0, owed: 0 };
       pmap[p.refby].count++;
@@ -589,27 +840,166 @@ function AnalyticsView({ projects }) {
     const partners = Object.keys(pmap)
       .map((k) => ({ name: k, ...pmap[k], collected: pmap[k].oneTime + pmap[k].recurring }))
       .sort((x, y) => y.collected - x.collected);
-    // recent launches
-    const recent = projects.filter((p) => p.launch).sort((x, y) => (x.launch < y.launch ? 1 : -1)).slice(0, 6);
-    return { collected, outstandingT, pipeline, mrr, refOwedT, active, launched, recurringCount, byMonth, monthKeys, monthTotal, counts, due, over, partners, recent };
-  }, [projects]);
 
-  const kpis = [
-    { label: "Collected", val: money(a.collected), cls: "green", sub: `${projects.length} projects total` },
-    { label: "Outstanding", val: money(a.outstandingT), cls: "amber", sub: "owed to you" },
-    { label: "Active pipeline", val: money(a.pipeline), cls: "blue", sub: `${a.active} active project${a.active === 1 ? "" : "s"}` },
-    { label: "Recurring / mo (MRR)", val: money(a.mrr), cls: "purple", sub: `${a.recurringCount} client${a.recurringCount === 1 ? "" : "s"} on retainer` },
-    { label: "Referral owed", val: money(a.refOwedT), cls: a.refOwedT > 0 ? "purple" : "", sub: "to partners (unpaid)" },
-    { label: "Shipped", val: String(a.launched), cls: "", sub: "complete + recurring" },
-  ];
+    return {
+      clients, collected, outstandingT, pipeline, mrr, contractorMrr, contractorCollected,
+      refOwedT, active, launched, recurringCount, lostCount, lostValue, winRate,
+      oneTimePerMonth, spanMonths, clientRunRate, totalRunRate, gap, undatedTotal,
+      avgDeal, belowFloor, paidCount: paidDeals.length, biggest,
+      attachRate, withRetainer, noRetainer, attachUpside, shippedCount: shipped.length,
+      funnel, newBizValue, newBizCount: newBiz.length, coverage,
+      noDeal, noDates, byMonth, monthKeys, counts, due, over, stuck, partners,
+    };
+  }, [projects, events]);
+
   const maxMonth = Math.max(1, ...a.monthKeys.map((k) => a.byMonth[k]));
-  const maxStatus = Math.max(1, ...WORK_STATUSES.map((s) => a.counts[s]));
+  const maxStatus = Math.max(1, ...STAGES.map((s) => a.counts[s]));
   const t = today();
 
   return (
     <section className="view">
+      {/* ---- the only number that matters ---- */}
+      <div className="target-card">
+        <div className="target-head">
+          <div>
+            <div className="target-label">Monthly run rate</div>
+            <div className="target-val">
+              {money(a.totalRunRate)}<span className="target-of"> / {money(MONTHLY_TARGET)}</span>
+            </div>
+          </div>
+          <div className="target-gap">
+            {a.gap > 0 ? (
+              <>
+                <div className="tg-num">{money(a.gap)}</div>
+                <div className="tg-sub">to go · {plural(Math.ceil(a.gap / RETAINER_TIERS[1]), "retainer")} at {money(RETAINER_TIERS[1])} or {plural(Math.ceil(a.gap / DEAL_FLOOR), "build")} at {money(DEAL_FLOOR)} a month</div>
+              </>
+            ) : (
+              <><div className="tg-num" style={{ color: "var(--green)" }}>Target hit</div><div className="tg-sub">raise it</div></>
+            )}
+          </div>
+        </div>
+        <RunRateBar
+          segments={[
+            { label: "Client retainers", val: a.mrr, color: "var(--green)" },
+            { label: "Builds (monthly avg)", val: a.oneTimePerMonth, color: "var(--accent)" },
+            { label: "Contractor", val: a.contractorMrr, color: "var(--purple)" },
+          ]}
+          target={MONTHLY_TARGET}
+        />
+        <div className="target-note">
+          Build revenue is {money(a.oneTimePerMonth)}/mo, averaged over the {a.spanMonths} month{a.spanMonths === 1 ? "" : "s"} your dated projects cover.
+          {a.undatedTotal > 0 ? ` ${money(a.undatedTotal)} of collected cash has no date on it and is not in this average.` : ""}
+        </div>
+      </div>
+
+      <div className="grid-2">
+        {/* ---- deal size vs the floor ---- */}
+        <div className="card">
+          <h4>Average collected deal <span className="pill">floor {money(DEAL_FLOOR)}</span></h4>
+          <div className="gauge">
+            <div className="gauge-val" style={{ color: a.avgDeal >= DEAL_FLOOR ? "var(--green)" : "var(--amber)" }}>
+              {money(a.avgDeal)}
+            </div>
+            <div className="gauge-track">
+              <div className="gauge-fill" style={{
+                width: Math.min(100, (a.avgDeal / (DEAL_FLOOR * 1.6)) * 100) + "%",
+                background: a.avgDeal >= DEAL_FLOOR ? "var(--green)" : "var(--amber)",
+              }} />
+              <div className="gauge-mark" style={{ left: (1 / 1.6) * 100 + "%" }}><span>{money(DEAL_FLOOR)}</span></div>
+            </div>
+          </div>
+          <div className="mini-rows">
+            <div className="mini"><span>Paying clients</span><b>{a.paidCount}</b></div>
+            <div className="mini"><span>Below your floor</span><b style={{ color: a.belowFloor ? "var(--amber)" : "var(--green)" }}>{a.belowFloor} of {a.paidCount}</b></div>
+            <div className="mini"><span>Biggest deal</span><b>{money(a.biggest)}</b></div>
+          </div>
+        </div>
+
+        {/* ---- retainer attach ---- */}
+        <div className="card">
+          <h4>Retainer attach rate <span className="pill">shipped clients on a retainer</span></h4>
+          <div className="gauge">
+            <div className="gauge-val" style={{ color: a.attachRate >= 60 ? "var(--green)" : "var(--amber)" }}>
+              {a.attachRate == null ? "—" : a.attachRate + "%"}
+            </div>
+            <div className="gauge-track">
+              <div className="gauge-fill" style={{ width: (a.attachRate || 0) + "%", background: a.attachRate >= 60 ? "var(--green)" : "var(--amber)" }} />
+            </div>
+          </div>
+          <div className="mini-rows">
+            <div className="mini"><span>On a retainer</span><b>{a.withRetainer.length} of {a.shippedCount}</b></div>
+            <div className="mini"><span>Worth if all attached</span><b style={{ color: "var(--green)" }}>+{money(a.attachUpside)}/mo</b></div>
+          </div>
+          {a.noRetainer.length > 0 && (
+            <div className="chip-list">
+              {a.noRetainer.slice(0, 10).map((p) => <span className="chip" key={p.id}>{p.client}</span>)}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="grid-2">
+        {/* ---- funnel ---- */}
+        <div className="card">
+          <h4>Acquisition funnel <span className="pill">furthest stage ever reached</span></h4>
+          {a.funnel[0].reached === 0 ? (
+            <div className="li-empty">No leads logged yet.</div>
+          ) : (
+            a.funnel.map((f, i) => {
+              const prev = i > 0 ? a.funnel[i - 1].reached : null;
+              const conv = prev ? Math.round((f.reached / prev) * 100) : null;
+              return (
+                <div className="funnel-row" key={f.stage}>
+                  <div className="fn-name">{f.stage}</div>
+                  <div className="fn-track">
+                    <div className="fn-fill" style={{
+                      width: Math.max(3, (f.reached / a.funnel[0].reached) * 100) + "%",
+                      background: STAGE_COLORS[f.stage] || "var(--green)",
+                    }} />
+                  </div>
+                  <div className="fn-n">{f.reached}</div>
+                  <div className="fn-conv" style={{ color: conv == null ? "var(--faint)" : conv >= 50 ? "var(--green)" : "var(--amber)" }}>
+                    {conv == null ? "" : conv + "%"}
+                  </div>
+                </div>
+              );
+            })
+          )}
+          <div className="card-note">Conversion sharpens as you move cards. Every drag is logged from here on.</div>
+        </div>
+
+        {/* ---- coverage ---- */}
+        <div className="card">
+          <h4>Pipeline coverage <span className="pill">healthy is 3x target</span></h4>
+          <div className="gauge">
+            <div className="gauge-val" style={{ color: a.coverage >= 3 ? "var(--green)" : a.coverage >= 1 ? "var(--amber)" : "var(--red)" }}>
+              {a.coverage.toFixed(1)}x
+            </div>
+            <div className="gauge-track">
+              <div className="gauge-fill" style={{
+                width: Math.min(100, (a.coverage / 3) * 100) + "%",
+                background: a.coverage >= 3 ? "var(--green)" : a.coverage >= 1 ? "var(--amber)" : "var(--red)",
+              }} />
+            </div>
+          </div>
+          <div className="mini-rows">
+            <div className="mini"><span>Open new business</span><b>{money(a.newBizValue)}</b></div>
+            <div className="mini"><span>Deals before In Progress</span><b>{a.newBizCount}</b></div>
+            <div className="mini"><span>Needed for 3x</span><b style={{ color: "var(--amber)" }}>{money(Math.max(0, MONTHLY_TARGET * 3 - a.newBizValue))} more</b></div>
+          </div>
+        </div>
+      </div>
+
+      {/* ---- supporting numbers ---- */}
       <div className="kpi-grid">
-        {kpis.map((k) => (
+        {[
+          { label: "Collected (clients)", val: money(a.collected), cls: "green", sub: `${a.clients.length} client projects` },
+          { label: "Client retainers / mo", val: money(a.mrr), cls: "green", sub: `${a.recurringCount} on retainer` },
+          { label: "Contractor income / mo", val: money(a.contractorMrr), cls: "purple", sub: "not client revenue" },
+          { label: "Outstanding", val: money(a.outstandingT), cls: "amber", sub: "on sold work only" },
+          { label: "Win rate", val: a.winRate == null ? "—" : a.winRate + "%", cls: a.winRate != null && a.winRate >= 50 ? "green" : "amber", sub: `${a.launched} won · ${a.lostCount} lost` },
+          { label: "Referral owed", val: money(a.refOwedT), cls: a.refOwedT > 0 ? "purple" : "", sub: "to partners (unpaid)" },
+        ].map((k) => (
           <div className="kpi" key={k.label}>
             <div className="label">{k.label}</div>
             <div className={"val " + k.cls}>{k.val}</div>
@@ -620,9 +1010,9 @@ function AnalyticsView({ projects }) {
 
       <div className="grid-2">
         <div className="card">
-          <h4>Collected revenue by month <span className="pill">{a.monthKeys.length ? money(a.monthTotal) + " dated" : "no dates yet"}</span></h4>
+          <h4>Cash by project date <span className="pill">not payment date</span></h4>
           {a.monthKeys.length === 0 ? (
-            <div className="li-empty">Add launch/due dates to see revenue timing.</div>
+            <div className="li-empty">Add launch or start dates to see revenue timing.</div>
           ) : (
             <div className="barchart">
               {a.monthKeys.map((k) => {
@@ -636,24 +1026,32 @@ function AnalyticsView({ projects }) {
               })}
             </div>
           )}
+          <div className="card-note">Dated by launch, then finish, then start. It shows when work happened, not when money landed.</div>
         </div>
 
         <div className="card">
-          <h4>Work status breakdown</h4>
-          {projects.length === 0 ? <div className="li-empty">No projects yet.</div> : WORK_STATUSES.map((s) => (
-            <div className="sbar-row" key={s}>
-              <div className="nm">{s}</div>
-              <div className="sbar-track"><div className="sbar-fill" style={{ width: (a.counts[s] / maxStatus * 100) + "%", background: WORK_COLORS[s] }} /></div>
-              <div className="ct">{a.counts[s]}</div>
-            </div>
-          ))}
+          <h4>Data gaps <span className="pill">what's making these numbers soft</span></h4>
+          <div className="mini-rows">
+            <div className="mini"><span>Clients with no deal value</span><b style={{ color: a.noDeal ? "var(--amber)" : "var(--green)" }}>{a.noDeal}</b></div>
+            <div className="mini"><span>Clients with no dates at all</span><b style={{ color: a.noDates ? "var(--amber)" : "var(--green)" }}>{a.noDates}</b></div>
+            <div className="mini"><span>Collected cash with no date</span><b style={{ color: a.undatedTotal ? "var(--amber)" : "var(--green)" }}>{money(a.undatedTotal)}</b></div>
+            <div className="mini"><span>Deals ever marked Lost</span><b style={{ color: a.lostCount ? "var(--green)" : "var(--amber)" }}>{a.lostCount}</b></div>
+          </div>
+          <div className="card-note">
+            {a.lostCount === 0
+              ? "Win rate stays fake until dead leads get dragged to Lost."
+              : "Fill the gaps above and every number on this page gets sharper."}
+          </div>
         </div>
       </div>
 
       <div className="grid-2">
         <div className="card">
-          <h4>Due soon <span className="pill">next 30 days</span></h4>
-          <ListBlock items={a.due} empty="Nothing due in the next 30 days." render={(p) => { const dl = daysBetween(parseDate(p.due), t); return { name: p.client, sub: p.project || p.work, right: dl === 0 ? "today" : dl + "d", color: dl <= 7 ? "var(--amber)" : "var(--muted)" }; }} />
+          <h4>Stuck in stage <span className="pill">past 2x the normal window</span></h4>
+          <ListBlock items={a.stuck} empty="Nothing is stalling. Good." render={(p) => ({
+            name: p.client, sub: `${normStage(p.work)}${p.project ? " · " + p.project : ""}`,
+            right: daysInStage(p) + "d", color: "var(--red)",
+          })} />
         </div>
         <div className="card">
           <h4>Overdue <span className="pill">past due, not launched</span></h4>
@@ -663,20 +1061,61 @@ function AnalyticsView({ projects }) {
 
       <div className="grid-2">
         <div className="card">
+          <h4>Pipeline by stage</h4>
+          {a.clients.length === 0 ? <div className="li-empty">No projects yet.</div> : STAGES.map((s) => (
+            <div className="sbar-row" key={s}>
+              <div className="nm">{s}</div>
+              <div className="sbar-track"><div className="sbar-fill" style={{ width: (a.counts[s] / maxStatus * 100) + "%", background: STAGE_COLORS[s] }} /></div>
+              <div className="ct">{a.counts[s]}</div>
+            </div>
+          ))}
+        </div>
+        <div className="card">
           <h4>Top referral partners</h4>
           <ListBlock items={a.partners} empty="No referral partners logged yet." render={(x) => ({
             name: x.name,
-            sub: `${x.count} referral${x.count === 1 ? "" : "s"} · ${money(x.collected)} collected` + (x.recurring > 0 ? ` (${money(x.oneTime)} builds + ${money(x.recurring)} recurring)` : ""),
+            sub: `${x.count} referral${x.count === 1 ? "" : "s"} · ${money(x.collected)} collected`,
             right: x.owed > 0 ? money(x.owed) + " owed" : (x.mrr > 0 ? money(x.mrr) + "/mo" : "—"),
             color: x.owed > 0 ? "var(--purple)" : (x.mrr > 0 ? "var(--green)" : "var(--faint)"),
           })} />
         </div>
+      </div>
+
+      <div className="grid-2">
         <div className="card">
-          <h4>Recently launched</h4>
-          <ListBlock items={a.recent} empty="No launches recorded yet." render={(p) => ({ name: p.client, sub: p.project || p.niche || "Launched", right: fmtDate(p.launch), color: "var(--green)" })} />
+          <h4>Why deals were lost</h4>
+          <ListBlock items={a.clients.filter(isDead).sort((x, y) => num(y.deal) - num(x.deal))} empty="No lost deals logged."
+            render={(p) => ({ name: p.client, sub: p.lostReason || "No reason recorded", right: num(p.deal) > 0 ? money(num(p.deal)) : "—", color: "var(--faint)" })} />
+        </div>
+        <div className="card">
+          <h4>Due soon <span className="pill">next 30 days</span></h4>
+          <ListBlock items={a.due} empty="Nothing due in the next 30 days." render={(p) => { const dl = daysBetween(parseDate(p.due), t); return { name: p.client, sub: p.project || p.work, right: dl === 0 ? "today" : dl + "d", color: dl <= 7 ? "var(--amber)" : "var(--muted)" }; }} />
         </div>
       </div>
     </section>
+  );
+}
+
+// Stacked bar: each income source as its own segment against the target.
+function RunRateBar({ segments, target }) {
+  const total = segments.reduce((s, x) => s + x.val, 0);
+  const scale = Math.max(target, total);
+  return (
+    <>
+      <div className="rr-track">
+        {segments.filter((s) => s.val > 0).map((s) => (
+          <div key={s.label} className="rr-seg" style={{ width: (s.val / scale) * 100 + "%", background: s.color }} title={`${s.label}: ${money(s.val)}`} />
+        ))}
+        {total > target && <div className="rr-target" style={{ left: (target / scale) * 100 + "%" }} />}
+      </div>
+      <div className="rr-legend">
+        {segments.map((s) => (
+          <span key={s.label} className="rr-key">
+            <i style={{ background: s.color }} />{s.label} <b>{money(s.val)}</b>
+          </span>
+        ))}
+      </div>
+    </>
   );
 }
 

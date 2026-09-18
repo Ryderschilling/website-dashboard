@@ -1,6 +1,16 @@
 "use client";
 import { useState } from "react";
 
+// Only ever bounce back to a path on this site, never to an outside URL.
+function safeNext() {
+  try {
+    const n = new URLSearchParams(window.location.search).get("next") || "/";
+    return n.startsWith("/") && !n.startsWith("//") ? n : "/";
+  } catch (e) {
+    return "/";
+  }
+}
+
 export default function Login() {
   const [pw, setPw] = useState("");
   const [err, setErr] = useState("");
@@ -17,7 +27,7 @@ export default function Login() {
         body: JSON.stringify({ password: pw }),
       });
       if (res.ok) {
-        window.location.href = "/";
+        window.location.href = safeNext();
       } else {
         const d = await res.json().catch(() => ({}));
         setErr(d.error || "Wrong password");

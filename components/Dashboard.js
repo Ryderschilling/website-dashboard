@@ -90,6 +90,7 @@ export default function Dashboard() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [toast, setToast] = useState("");
+  const [expired, setExpired] = useState(false);
   const [delConfirm, setDelConfirm] = useState(false);
   const fileRef = useRef(null);
 
@@ -104,18 +105,75 @@ export default function Dashboard() {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, []);
+  // Keep the session warm while the tab sits open, and notice a dead one before
+  // you click something. The middleware renews the cookie on every ping.
+  useEffect(() => {
+    let alive = true;
+    async function ping() {
+      if (!alive || document.hidden) return;
+      try {
+        const r = await fetch("/api/session", { cache: "no-store" });
+        if (alive) setExpired(r.status === 401);
+      } catch (_) { /* offline: leave the banner as it is */ }
+    }
+    const t = setInterval(ping, 4 * 60 * 1000);
+    document.addEventListener("visibilitychange", ping);
+    window.addEventListener("focus", ping);
+    return () => {
+      alive = false;
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", ping);
+      window.removeEventListener("focus", ping);
+    };
+  }, []);
 
   async function refresh() {
     try {
-      const res = await fetch("/api/projects");
-      if (res.status === 401) { window.location.href = "/login"; return; }
-      const d = await res.json();
+      const d = await api("/api/projects");
       setProjects((d.projects || []).map(normProject));
       setEvents(d.events || []);
-    } catch (e) { showToast("⚠ Could not reach the database"); }
+      setExpired(false);
+    } catch (e) { failToast("Could not load your projects", e); }
     setLoading(false);
   }
   function showToast(m) { setToast(m); clearTimeout(showToast._t); showToast._t = setTimeout(() => setToast(""), 2400); }
+
+  // ---- one door for every API call ----------------------------------------
+  // Before this, a failed write showed a generic line like "Could not update
+  // phase", which hid the two things that actually go wrong: an expired login
+  // (401) and a real server error. Now a 401 says so and sends you to the login
+  // screen, and anything else shows the server's own message.
+  async function api(url, opts) {
+    let res;
+    try {
+      res = await fetch(url, opts);
+    } catch (netErr) {
+      // one quick retry covers a dropped packet or a cold serverless start
+      await new Promise((r) => setTimeout(r, 700));
+      res = await fetch(url, opts);
+    }
+    if (res.status === 401) {
+      setExpired(true);
+      const back = window.location.pathname + window.location.search;
+      setTimeout(() => { window.location.href = "/login?next=" + encodeURIComponent(back); }, 1500);
+      const e = new Error("Session expired, sending you to the login screen");
+      e.auth = true;
+      throw e;
+    }
+    if (!res.ok) {
+      let msg = "";
+      try { const d = await res.json(); if (d && d.error) msg = String(d.error); } catch (_) {}
+      throw new Error(msg || ("Server error " + res.status));
+    }
+    if (res.status === 204) return {};
+    return res.json().catch(() => ({}));
+  }
+  // Short, readable failure text. Server messages can run long, so they get cut.
+  function failToast(prefix, err) {
+    if (err && err.auth) { showToast("⚠ " + err.message); return; }
+    const m = (err && err.message ? String(err.message) : "unknown error").slice(0, 90);
+    showToast("⚠ " + prefix + ": " + m);
+  }
 
   // ---- CRUD ----
   function openModal(p) {
@@ -132,11 +190,9 @@ export default function Dashboard() {
     const url = isEdit ? `/api/projects/${editing.id}` : "/api/projects";
     const method = isEdit ? "PUT" : "POST";
     try {
-      const res = await fetch(url, {
+      const d = await api(url, {
         method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(form),
       });
-      if (!res.ok) throw new Error("save failed");
-      const d = await res.json();
       const saved = normProject(d.project);
       setProjects((list) => {
         const i = list.findIndex((x) => x.id === saved.id);
@@ -147,19 +203,18 @@ export default function Dashboard() {
       showToast(isEdit ? "Project updated" : "Project added");
       // the stage may have moved, so pull the fresh event log for Analytics
       refresh();
-    } catch (e) { showToast("⚠ Save failed — check your connection"); }
+    } catch (e) { failToast("Save failed", e); }
   }
 
   async function deleteCurrent() {
     if (!delConfirm) { setDelConfirm(true); setTimeout(() => setDelConfirm(false), 3000); return; }
     const id = editing.id;
     try {
-      const res = await fetch(`/api/projects/${id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error();
+      await api(`/api/projects/${id}`, { method: "DELETE" });
       setProjects((list) => list.filter((x) => x.id !== id));
       closeModal();
       showToast("Project deleted");
-    } catch (e) { showToast("⚠ Delete failed"); }
+    } catch (e) { failToast("Delete failed", e); }
   }
 
   // ---- inline quick phase change ----
@@ -168,19 +223,17 @@ export default function Dashboard() {
     const prev = projects;
     setProjects((list) => list.map((x) => (x.id === p.id ? { ...x, work: newWork } : x)));
     try {
-      const res = await fetch(`/api/projects/${p.id}`, {
+      const d = await api(`/api/projects/${p.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...p, work: newWork }),
       });
-      if (!res.ok) throw new Error("save failed");
-      const d = await res.json();
       const saved = normProject(d.project);
       setProjects((list) => list.map((x) => (x.id === saved.id ? saved : x)));
       showToast("Phase updated");
     } catch (e) {
       setProjects(prev);
-      showToast("⚠ Could not update phase");
+      failToast("Could not update phase", e);
     }
   }
 
@@ -194,19 +247,17 @@ export default function Dashboard() {
       list.map((x) => (rank[x.id] ? { ...x, work: rank[x.id].work, sortOrder: rank[x.id].sortOrder } : x))
     );
     try {
-      const res = await fetch("/api/projects/reorder", {
+      const d = await api("/api/projects/reorder", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ moves }),
       });
-      if (!res.ok) throw new Error("reorder failed");
-      const d = await res.json();
       setProjects((d.projects || []).map(normProject));
       if (d.events) setEvents(d.events);
       return true;
     } catch (e) {
       setProjects(prev);
-      showToast("\u26a0 Could not save the move");
+      failToast("Could not save the move", e);
       return false;
     }
   }
@@ -231,13 +282,11 @@ export default function Dashboard() {
     try {
       const data = JSON.parse(text);
       const list = Array.isArray(data) ? data : data.projects;
-      if (!Array.isArray(list)) throw new Error();
-      const res = await fetch("/api/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(list) });
-      if (!res.ok) throw new Error();
-      const d = await res.json();
+      if (!Array.isArray(list)) throw new Error("that file is not a project backup");
+      const d = await api("/api/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(list) });
       setProjects((d.projects || []).map(normProject));
       showToast(`Imported ${d.imported} projects into the database`);
-    } catch (err) { showToast("⚠ Invalid backup file"); }
+    } catch (err) { failToast("Import failed", err); }
     e.target.value = "";
   }
 
@@ -399,6 +448,12 @@ export default function Dashboard() {
         />
       )}
 
+      {expired && (
+        <div className="session-bar" role="alert">
+          <span>Your session expired, so edits will not save. Nothing was lost.</span>
+          <a className="btn primary" href="/login">Log back in</a>
+        </div>
+      )}
       <div className={"toast" + (toast ? " show" : "")}><span className="dot" />{toast}</div>
       <input ref={fileRef} type="file" accept="application/json" style={{ display: "none" }} onChange={onImportFile} />
     </>

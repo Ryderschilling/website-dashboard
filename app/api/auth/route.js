@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { expectedToken, hashPassword, COOKIE_NAME } from "@/lib/token";
+import { expectedToken, hashPassword, COOKIE_NAME, SESSION_MAX_AGE } from "@/lib/token";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,7 +29,7 @@ export async function POST(req) {
     secure: true,
     sameSite: "lax",
     path: "/",
-    maxAge: 60 * 60 * 24 * 30, // 30 days
+    maxAge: SESSION_MAX_AGE,
   });
   return res;
 }

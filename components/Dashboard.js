@@ -3,6 +3,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { Sidebar, SidebarBody, SidebarLink, useSidebar } from "@/components/ui/sidebar";
 import { motion } from "framer-motion";
 import PipelineBoard from "@/components/PipelineBoard";
+import RevenueView, { undatedCash } from "@/components/RevenueView";
 import { LayoutList, KanbanSquare, BarChart3, Plus, Upload, Download, FileDown, LogOut } from "lucide-react";
 import {
   STAGES, STAGE_COLORS, STAGE_HINTS, normStage,
@@ -79,6 +80,7 @@ const BLANK = {
 export default function Dashboard() {
   const [projects, setProjects] = useState([]);
   const [events, setEvents] = useState([]);
+  const [payments, setPayments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("projects");
   const [q, setQ] = useState("");
@@ -132,6 +134,7 @@ export default function Dashboard() {
       const d = await api("/api/projects");
       setProjects((d.projects || []).map(normProject));
       setEvents(d.events || []);
+      setPayments(d.payments || []);
       setExpired(false);
     } catch (e) { failToast("Could not load your projects", e); }
     setLoading(false);
@@ -204,6 +207,33 @@ export default function Dashboard() {
       // the stage may have moved, so pull the fresh event log for Analytics
       refresh();
     } catch (e) { failToast("Save failed", e); }
+  }
+
+  // ---- payments (the real month-by-month record) ----
+  async function addPayments(items) {
+    try {
+      const d = await api("/api/payments", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items }),
+      });
+      setPayments((list) => [...(d.payments || []), ...list]);
+      if (d.projects && d.projects.length) {
+        setProjects((list) => list.map((x) => {
+          const u = d.projects.find((y) => y.id === x.id);
+          return u ? normProject(u) : x;
+        }));
+      }
+      const n = (d.payments || []).length;
+      showToast(n === 1 ? "Payment logged" : n + " payments logged");
+      return true;
+    } catch (e) { failToast("Could not log payment", e); return false; }
+  }
+  async function deletePayment(id) {
+    try {
+      await api(`/api/payments/${id}`, { method: "DELETE" });
+      setPayments((list) => list.filter((x) => x.id !== id));
+      showToast("Payment removed");
+      return true;
+    } catch (e) { failToast("Could not remove payment", e); return false; }
   }
 
   async function deleteCurrent() {
@@ -435,7 +465,7 @@ export default function Dashboard() {
                 showToast={showToast}
               />
             ) : (
-              <AnalyticsView projects={projects} events={events} />
+              <AnalyticsView projects={projects} events={events} payments={payments} onAddPayments={addPayments} onDeletePayment={deletePayment} />
             )}
           </main>
         </div>
@@ -762,7 +792,7 @@ function EditModal({ form, setField, isEdit, onClose, onSave, onDelete, delConfi
 // ---------- Analytics ----------
 // One question this page has to answer: am I on track for $10k a month, and
 // what is blocking it. Everything below serves that.
-function AnalyticsView({ projects, events }) {
+function AnalyticsView({ projects, events, payments, onAddPayments, onDeletePayment }) {
   const a = useMemo(() => {
     // Client work only. Contractor paychecks are real income but they are not
     // the business, and mixing them hides what the business is actually doing.
@@ -904,8 +934,9 @@ function AnalyticsView({ projects, events }) {
       attachRate, withRetainer, noRetainer, attachUpside, shippedCount: shipped.length,
       funnel, newBizValue, newBizCount: newBiz.length, coverage,
       noDeal, noDates, byMonth, monthKeys, counts, due, over, stuck, partners,
+      undatedReal: undatedCash(projects, payments).reduce((s, x) => s + x.amount, 0),
     };
-  }, [projects, events]);
+  }, [projects, events, payments]);
 
   const maxMonth = Math.max(1, ...a.monthKeys.map((k) => a.byMonth[k]));
   const maxStatus = Math.max(1, ...STAGES.map((s) => a.counts[s]));
@@ -913,39 +944,9 @@ function AnalyticsView({ projects, events }) {
 
   return (
     <section className="view">
-      {/* ---- the only number that matters ---- */}
-      <div className="target-card">
-        <div className="target-head">
-          <div>
-            <div className="target-label">Monthly run rate</div>
-            <div className="target-val">
-              {money(a.totalRunRate)}<span className="target-of"> / {money(MONTHLY_TARGET)}</span>
-            </div>
-          </div>
-          <div className="target-gap">
-            {a.gap > 0 ? (
-              <>
-                <div className="tg-num">{money(a.gap)}</div>
-                <div className="tg-sub">to go · {plural(Math.ceil(a.gap / RETAINER_TIERS[1]), "retainer")} at {money(RETAINER_TIERS[1])} or {plural(Math.ceil(a.gap / DEAL_FLOOR), "build")} at {money(DEAL_FLOOR)} a month</div>
-              </>
-            ) : (
-              <><div className="tg-num" style={{ color: "var(--green)" }}>Target hit</div><div className="tg-sub">raise it</div></>
-            )}
-          </div>
-        </div>
-        <RunRateBar
-          segments={[
-            { label: "Client retainers", val: a.mrr, color: "var(--green)" },
-            { label: "Builds (monthly avg)", val: a.oneTimePerMonth, color: "var(--accent)" },
-            { label: "Contractor", val: a.contractorMrr, color: "var(--purple)" },
-          ]}
-          target={MONTHLY_TARGET}
-        />
-        <div className="target-note">
-          Build revenue is {money(a.oneTimePerMonth)}/mo, averaged over the {a.spanMonths} month{a.spanMonths === 1 ? "" : "s"} your dated projects cover.
-          {a.undatedTotal > 0 ? ` ${money(a.undatedTotal)} of collected cash has no date on it and is not in this average.` : ""}
-        </div>
-      </div>
+      <RevenueView projects={projects} payments={payments} onAdd={onAddPayments} onDelete={onDeletePayment} />
+
+      <div className="section-title">Pipeline health</div>
 
       <div className="grid-2">
         {/* ---- deal size vs the floor ---- */}
@@ -1063,33 +1064,13 @@ function AnalyticsView({ projects, events }) {
         ))}
       </div>
 
-      <div className="grid-2">
-        <div className="card">
-          <h4>Cash by project date <span className="pill">not payment date</span></h4>
-          {a.monthKeys.length === 0 ? (
-            <div className="li-empty">Add launch or start dates to see revenue timing.</div>
-          ) : (
-            <div className="barchart">
-              {a.monthKeys.map((k) => {
-                const parts = k.split("-");
-                return (
-                  <div className="bar-col" key={k}>
-                    <div className="bar" data-v={money(a.byMonth[k])} style={{ height: Math.max(2, (a.byMonth[k] / maxMonth) * 118) + "px" }} />
-                    <div className="bar-lbl">{MONTHS[parseInt(parts[1], 10) - 1]} {parts[0].slice(2)}</div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          <div className="card-note">Dated by launch, then finish, then start. It shows when work happened, not when money landed.</div>
-        </div>
-
+      <div className="gaps-row">
         <div className="card">
           <h4>Data gaps <span className="pill">what's making these numbers soft</span></h4>
-          <div className="mini-rows">
+          <div className="mini-rows cols-2">
             <div className="mini"><span>Clients with no deal value</span><b style={{ color: a.noDeal ? "var(--amber)" : "var(--green)" }}>{a.noDeal}</b></div>
             <div className="mini"><span>Clients with no dates at all</span><b style={{ color: a.noDates ? "var(--amber)" : "var(--green)" }}>{a.noDates}</b></div>
-            <div className="mini"><span>Collected cash with no date</span><b style={{ color: a.undatedTotal ? "var(--amber)" : "var(--green)" }}>{money(a.undatedTotal)}</b></div>
+            <div className="mini"><span>Collected cash with no payment date</span><b style={{ color: a.undatedReal ? "var(--amber)" : "var(--green)" }}>{money(a.undatedReal)}</b></div>
             <div className="mini"><span>Deals ever marked Lost</span><b style={{ color: a.lostCount ? "var(--green)" : "var(--amber)" }}>{a.lostCount}</b></div>
           </div>
           <div className="card-note">

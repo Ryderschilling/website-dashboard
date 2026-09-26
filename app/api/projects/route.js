@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
-import { getAll, upsert, getEvents } from "@/lib/db";
+import { getAll, upsert, getEvents, getPayments } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const [projects, events] = await Promise.all([getAll(), getEvents()]);
-    return NextResponse.json({ projects, events });
+    const [projects, events, payments] = await Promise.all([getAll(), getEvents(), getPayments()]);
+    return NextResponse.json({ projects, events, payments });
   } catch (e) {
     return NextResponse.json({ error: String(e.message || e) }, { status: 500 });
   }

@@ -56,6 +56,21 @@ update projects set stage_at = coalesce(updated_at, created_at, now())
 where stage_at is null;
 alter table projects alter column stage_at set default now();
 
+-- Real payments, one row per payment that landed. The only source for
+-- month-by-month revenue. kind: build | retainer | contractor | other
+create table if not exists payments (
+  id         bigserial primary key,
+  project_id text default '',
+  client     text default '',
+  kind       text not null default 'build',
+  amount     numeric not null default 0,
+  paid_on    date not null,
+  note       text default '',
+  created_at timestamptz default now()
+);
+create index if not exists payments_paid_on_idx on payments (paid_on);
+create index if not exists payments_project_idx on payments (project_id);
+
 -- Fold the old status names into the new stage list.
 update projects set work = 'Proposal'    where work = 'Payment Pending';
 update projects set work = 'In Progress' where work = 'On Hold';

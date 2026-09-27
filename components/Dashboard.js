@@ -30,11 +30,12 @@ const refOwed = (p) => (p.refpaid ? 0 : (num(p.paid) * num(p.refpct)) / 100);
 const isRecurring = (p) => stageIsRecurring(p.work);
 const isDone = (p) => stageIsDone(p.work);
 const isDead = (p) => isLost(p.work);
-// MRR only counts once the job has shipped and the retainer is actually billing
-const liveMrr = (p) => (isDone(p) ? num(p.mrr) : 0);
+// Monthly money only counts once the project sits in the Recurring stage.
+// Recurring = the build shipped AND they now pay monthly on top of it.
+const liveMrr = (p) => (isRecurring(p) ? num(p.mrr) : 0);
 // Full months of retainer billed so far, counted from launch (falls back to due/start).
 const monthsBilled = (p) => {
-  if (!isDone(p) || num(p.mrr) <= 0) return 0;
+  if (!isRecurring(p) || num(p.mrr) <= 0) return 0;
   const d = parseDate(p.launch || p.due || p.start);
   if (!d) return 0;
   const t = today();
@@ -813,7 +814,7 @@ function EditModal({ form, setField, isEdit, onClose, onSave, onDelete, delConfi
             </div>
             {inp("deal", "Deal value ($)", { type: "number", ph: "8000" })}
             {inp("paid", "Amount collected ($)", { type: "number", ph: "4000", hint: "raising this asks for the date" })}
-            {inp("mrr", "Monthly recurring ($)", { type: "number", ph: "150", hint: "counts once the stage is Complete or Recurring" })}
+            {inp("mrr", "Monthly recurring ($)", { type: "number", ph: "150", hint: "counts once the stage is Recurring" })}
             {inp("refby", "Referred by", { ph: "Partner name" })}
             {inp("refpct", "Referral %", { type: "number", ph: "10" })}
             <div className="field inline-check">
@@ -842,8 +843,8 @@ function EditModal({ form, setField, isEdit, onClose, onSave, onDelete, delConfi
             {num(form.mrr) > 0 && (
               <div className="d">
                 <div className="dl">Monthly recurring</div>
-                <div className="dv" style={{ color: isDone(form) ? "var(--green)" : "var(--muted)" }}>
-                  {money(num(form.mrr))}{isDone(form) ? "" : " (starts at Complete / Recurring)"}
+                <div className="dv" style={{ color: isRecurring(form) ? "var(--green)" : "var(--muted)" }}>
+                  {money(num(form.mrr))}{isRecurring(form) ? "" : " (starts counting at Recurring)"}
                 </div>
               </div>
             )}
@@ -917,16 +918,24 @@ function AnalyticsView({ projects, events, payments, onAddPayments, onDeletePaym
     const gap = Math.max(0, MONTHLY_TARGET - totalRunRate);
 
     // --- deal size vs the floor ----------------------------------------------
-    const paidDeals = clients.filter((p) => num(p.paid) > 0);
-    const avgDeal = paidDeals.length ? collected / paidDeals.length : 0;
-    const belowFloor = paidDeals.filter((p) => num(p.paid) < DEAL_FLOOR).length;
-    const biggest = paidDeals.reduce((m, p) => Math.max(m, num(p.paid)), 0);
+    // One project = one deal, however many installments it was paid in.
+    // A deal counts once it is sold (In Progress or later) or real money came in.
+    // Its size is the deal value, or what was collected if that came in higher. Retainer
+    // money is never part of this: it lives in its own monthly bucket.
+    const dealValue = (p) => Math.max(num(p.deal), num(p.paid));
+    const paidDeals = clients.filter((p) =>
+      !isDead(p) && dealValue(p) >= 50 &&
+      (stageIndex(p.work) >= stageIndex("In Progress") || num(p.paid) >= 50));
+    const avgDeal = paidDeals.length ? paidDeals.reduce((s2, p) => s2 + dealValue(p), 0) / paidDeals.length : 0;
+    const avgCollectedPerDeal = paidDeals.length ? paidDeals.reduce((s2, p) => s2 + num(p.paid), 0) / paidDeals.length : 0;
+    const belowFloor = paidDeals.filter((p) => dealValue(p) < DEAL_FLOOR).length;
+    const biggest = paidDeals.reduce((m, p) => Math.max(m, dealValue(p)), 0);
 
     // --- retainer attach rate -------------------------------------------------
     const shipped = clients.filter(isDone);
-    const withRetainer = shipped.filter((p) => num(p.mrr) > 0);
+    const withRetainer = shipped.filter(isRecurring);
     const attachRate = shipped.length ? Math.round((withRetainer.length / shipped.length) * 100) : null;
-    const noRetainer = shipped.filter((p) => num(p.mrr) <= 0);
+    const noRetainer = shipped.filter((p) => !isRecurring(p));
     // What closing that gap is worth at the real retainer prices.
     const attachUpside = noRetainer.length * RETAINER_TIERS[0];
 
@@ -1001,7 +1010,7 @@ function AnalyticsView({ projects, events, payments, onAddPayments, onDeletePaym
       clients, collected, outstandingT, pipeline, mrr, contractorMrr, contractorCollected,
       refOwedT, active, launched, recurringCount, lostCount, lostValue, winRate,
       oneTimePerMonth, spanMonths, clientRunRate, totalRunRate, gap, undatedTotal,
-      avgDeal, belowFloor, paidCount: paidDeals.length, biggest,
+      avgDeal, avgCollectedPerDeal, belowFloor, paidCount: paidDeals.length, biggest,
       attachRate, withRetainer, noRetainer, attachUpside, shippedCount: shipped.length,
       funnel, newBizValue, newBizCount: newBiz.length, coverage,
       noDeal, noDates, byMonth, monthKeys, counts, due, over, stuck, partners,
@@ -1022,7 +1031,7 @@ function AnalyticsView({ projects, events, payments, onAddPayments, onDeletePaym
       <div className="grid-2">
         {/* ---- deal size vs the floor ---- */}
         <div className="card">
-          <h4>Average collected deal <span className="pill">floor {money(DEAL_FLOOR)}</span></h4>
+          <h4>Average deal size <span className="pill">per project, not per payment · floor {money(DEAL_FLOOR)}</span></h4>
           <div className="gauge">
             <div className="gauge-val" style={{ color: a.avgDeal >= DEAL_FLOOR ? "var(--green)" : "var(--amber)" }}>
               {money(a.avgDeal)}
@@ -1036,7 +1045,8 @@ function AnalyticsView({ projects, events, payments, onAddPayments, onDeletePaym
             </div>
           </div>
           <div className="mini-rows">
-            <div className="mini"><span>Paying clients</span><b>{a.paidCount}</b></div>
+            <div className="mini"><span>Deals counted</span><b>{a.paidCount}</b></div>
+            <div className="mini"><span>Avg collected per deal so far</span><b>{money(a.avgCollectedPerDeal)}</b></div>
             <div className="mini"><span>Below your floor</span><b style={{ color: a.belowFloor ? "var(--amber)" : "var(--green)" }}>{a.belowFloor} of {a.paidCount}</b></div>
             <div className="mini"><span>Biggest deal</span><b>{money(a.biggest)}</b></div>
           </div>
@@ -1044,7 +1054,7 @@ function AnalyticsView({ projects, events, payments, onAddPayments, onDeletePaym
 
         {/* ---- retainer attach ---- */}
         <div className="card">
-          <h4>Retainer attach rate <span className="pill">shipped clients on a retainer</span></h4>
+          <h4>Retainer attach rate <span className="pill">shipped clients in Recurring</span></h4>
           <div className="gauge">
             <div className="gauge-val" style={{ color: a.attachRate >= 60 ? "var(--green)" : "var(--amber)" }}>
               {a.attachRate == null ? "—" : a.attachRate + "%"}

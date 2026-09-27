@@ -1,6 +1,6 @@
 "use client";
 import { useMemo, useState } from "react";
-import { isDone as stageIsDone, MONTHLY_TARGET, isClient } from "@/lib/pipeline";
+import { isRecurring as stageIsRecurring, MONTHLY_TARGET, isClient } from "@/lib/pipeline";
 
 // ---------------------------------------------------------------------------
 // Money in, month by month. Every number here comes from a logged payment
@@ -108,7 +108,7 @@ export default function RevenueView({ projects, payments, onAdd, onDelete }) {
       (payments || []).filter((p) => keyOf(p.date) === curKey && (p.kind === "retainer" || p.kind === "contractor")).map((p) => p.projectId)
     );
     return (projects || [])
-      .filter((p) => stageIsDone(p.work) && num(p.mrr) > 0 && !logged.has(p.id))
+      .filter((p) => stageIsRecurring(p.work) && num(p.mrr) > 0 && !logged.has(p.id))
       .map((p) => ({ p, kind: isClient(p) ? "retainer" : "contractor", amount: num(p.mrr) }));
   }, [projects, payments, curKey]);
 
@@ -358,11 +358,11 @@ function LogModal({ projects, onClose, onAdd }) {
     const p = sorted.find((x) => x.id === id);
     if (!p) return;
     if (!isClient(p)) setKind("contractor");
-    else if (stageIsDone(p.work) && num(p.mrr) > 0 && num(p.paid) >= num(p.deal)) setKind("retainer");
+    else if (stageIsRecurring(p.work) && num(p.mrr) > 0 && num(p.paid) >= num(p.deal)) setKind("retainer");
     else setKind("build");
     if (!amount) {
       const left = Math.max(0, num(p.deal) - num(p.paid));
-      if (!isClient(p) || (stageIsDone(p.work) && num(p.mrr) > 0 && left === 0)) setAmount(String(num(p.mrr) || ""));
+      if (!isClient(p) || (stageIsRecurring(p.work) && num(p.mrr) > 0 && left === 0)) setAmount(String(num(p.mrr) || ""));
     }
   }
 

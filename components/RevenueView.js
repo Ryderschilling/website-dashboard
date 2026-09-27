@@ -48,7 +48,8 @@ export function undatedCash(projects, payments) {
 }
 
 export default function RevenueView({ projects, payments, onAdd, onDelete }) {
-  const [sel, setSel] = useState("all");
+  // Opens on the current month. "All time" is one click away.
+  const [sel, setSel] = useState(() => keyOf(todayIso()));
   const [scaleToGoal, setScaleToGoal] = useState(true);
   const [logOpen, setLogOpen] = useState(false);
   const [recurOpen, setRecurOpen] = useState(false);

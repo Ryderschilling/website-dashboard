@@ -94,6 +94,7 @@ export default function Dashboard() {
   const [toast, setToast] = useState("");
   const [expired, setExpired] = useState(false);
   const [delConfirm, setDelConfirm] = useState(false);
+  const [payPrompt, setPayPrompt] = useState(null); // new collected money waiting for its date
   const fileRef = useRef(null);
 
   // ---- load ----
@@ -184,11 +185,24 @@ export default function Dashboard() {
     setForm(p ? { ...BLANK, ...p } : { ...BLANK });
     setDelConfirm(false);
   }
-  function closeModal() { setEditing(null); }
+  function closeModal() { setEditing(null); setPayPrompt(null); }
   function setField(k, v) { setForm((f) => ({ ...f, [k]: v })); }
 
+  // Any time "Amount collected" goes up, the new money needs the date it landed,
+  // or it can never show up in the right month on Analytics. So the save stops
+  // and asks for it first.
   async function saveForm() {
     if (!form.client.trim()) { showToast("⚠ Client name is required"); return; }
+    const before = editing && editing.id ? num(editing.paid) : 0;
+    const added = Math.round((num(form.paid) - before) * 100) / 100;
+    if (added >= 1) {
+      setPayPrompt({ amount: added, client: form.client.trim(), kind: form.incomeType === "contractor" ? "contractor" : "build" });
+      return;
+    }
+    await doSave(null);
+  }
+
+  async function doSave(pay) {
     const isEdit = !!(editing && editing.id);
     const url = isEdit ? `/api/projects/${editing.id}` : "/api/projects";
     const method = isEdit ? "PUT" : "POST";
@@ -203,7 +217,12 @@ export default function Dashboard() {
         return [...list, saved];
       });
       closeModal();
-      showToast(isEdit ? "Project updated" : "Project added");
+      setPayPrompt(null);
+      if (pay) {
+        await addPayments([{ projectId: saved.id, kind: pay.kind, amount: pay.amount, date: pay.date, note: pay.note || "" }]);
+      } else {
+        showToast(isEdit ? "Project updated" : "Project added");
+      }
       // the stage may have moved, so pull the fresh event log for Analytics
       refresh();
     } catch (e) { failToast("Save failed", e); }
@@ -478,6 +497,10 @@ export default function Dashboard() {
         />
       )}
 
+      {editing && payPrompt && (
+        <PayDateModal prompt={payPrompt} onBack={() => setPayPrompt(null)} onConfirm={(pay) => doSave(pay)} />
+      )}
+
       {expired && (
         <div className="session-bar" role="alert">
           <span>Your session expired, so edits will not save. Nothing was lost.</span>
@@ -699,6 +722,54 @@ function WorkCell({ p, onQuickWork }) {
 }
 
 // ---------- Edit modal ----------
+// Pops up over the project editor whenever collected money goes up.
+function PayDateModal({ prompt, onBack, onConfirm }) {
+  const iso = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  const t = new Date();
+  const y = new Date(t.getFullYear(), t.getMonth(), t.getDate() - 1);
+  const [date, setDate] = useState("");
+  const [amount, setAmount] = useState(String(prompt.amount));
+  const [kind, setKind] = useState(prompt.kind);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const amt = num(amount);
+  const left = Math.max(0, Math.round((prompt.amount - amt) * 100) / 100);
+  const ok = !!date && amt > 0 && !busy;
+  return (
+    <div className="overlay pay-overlay" onClick={(e) => { if (e.target === e.currentTarget) onBack(); }}>
+      <div className="modal pay-modal" role="dialog" aria-modal="true" aria-labelledby="pay-title">
+        <div className="modal-head"><h3 id="pay-title">When did this money land?</h3><button className="icon-btn" onClick={onBack} aria-label="Back to the project">✕</button></div>
+        <div className="modal-body">
+          <p className="pay-lead">You added <b>{money(prompt.amount)}</b> collected for <b>{prompt.client}</b>. Pick the day it hit your account so it lands in the right month on Analytics.</p>
+          <div className="pay-quick">
+            <button type="button" className={"rchip" + (date === iso(t) ? " on" : "")} onClick={() => setDate(iso(t))}>Today</button>
+            <button type="button" className={"rchip" + (date === iso(y) ? " on" : "")} onClick={() => setDate(iso(y))}>Yesterday</button>
+          </div>
+          <div className="form-grid">
+            <div className="field"><label htmlFor="pay-date">Date it landed *</label><input id="pay-date" type="date" value={date} max={iso(t)} onChange={(e) => setDate(e.target.value)} autoFocus /></div>
+            <div className="field"><label htmlFor="pay-amt">Amount ($)</label><input id="pay-amt" type="number" min="1" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} /></div>
+            <div className="field">
+              <label htmlFor="pay-kind">Type</label>
+              <select id="pay-kind" value={kind} onChange={(e) => setKind(e.target.value)}>
+                <option value="build">Build</option><option value="contractor">Contractor</option><option value="other">Other</option>
+              </select>
+            </div>
+            <div className="field"><label htmlFor="pay-note">How it came in<span className="hint"> optional</span></label><input id="pay-note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Square, Zelle, Venmo…" /></div>
+          </div>
+          {left > 0 && <div className="card-note">{money(left)} stays undated. Give it its own date later from Analytics, under "Collected, no date yet".</div>}
+        </div>
+        <div className="modal-foot">
+          <button className="btn ghost" onClick={onBack}>Back</button>
+          <div className="spacer" />
+          <button className="btn primary" disabled={!ok} onClick={async () => { setBusy(true); await onConfirm({ date, amount: amt, kind, note }); setBusy(false); }}>
+            {date ? "Save project + payment" : "Pick a date first"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function EditModal({ form, setField, isEdit, onClose, onSave, onDelete, delConfirm }) {
   const inp = (k, label, opts = {}) => (
     <div className={"field" + (opts.full ? " full" : "")}>
@@ -741,7 +812,7 @@ function EditModal({ form, setField, isEdit, onClose, onSave, onDelete, delConfi
               </select>
             </div>
             {inp("deal", "Deal value ($)", { type: "number", ph: "8000" })}
-            {inp("paid", "Amount collected ($)", { type: "number", ph: "4000" })}
+            {inp("paid", "Amount collected ($)", { type: "number", ph: "4000", hint: "raising this asks for the date" })}
             {inp("mrr", "Monthly recurring ($)", { type: "number", ph: "150", hint: "counts once the stage is Complete or Recurring" })}
             {inp("refby", "Referred by", { ph: "Partner name" })}
             {inp("refpct", "Referral %", { type: "number", ph: "10" })}

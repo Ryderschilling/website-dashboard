@@ -397,3 +397,10 @@ tbody tr:hover .row-actions{opacity:1}
 }
 .undated .li-name{font-weight:650;font-size:13.5px}
 .undated .li-sub{color:var(--muted);font-size:12px;margin-top:1px}
+
+/* payment date prompt (sits over the project editor) */
+.pay-overlay{z-index:60;padding-top:90px}
+.pay-modal{max-width:500px}
+.pay-lead{font-size:13.5px;color:var(--muted);line-height:1.55;margin-bottom:14px}
+.pay-lead b{color:var(--text)}
+.pay-quick{display:flex;gap:6px;margin-bottom:14px}
